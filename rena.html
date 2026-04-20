@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Renombrador de Analíticos UNC - Psicología</title>
+<style>
+  body { font-family: Arial, sans-serif; margin: 20px; background: #f4f4f4; }
+  h1 { text-align: center; color: #2c3e50; }
+  .drop-zone { border: 3px dashed #3498db; padding: 40px; text-align: center; background: white; border-radius: 10px; cursor: pointer; }
+  .drop-zone.dragover { background: #e8f4fc; }
+  table { width: 100%; border-collapse: collapse; margin-top: 20px; background: white; }
+  th, td { padding: 12px; border: 1px solid #ddd; text-align: left; }
+  th { background: #3498db; color: white; }
+  button { padding: 12px 24px; color: white; border: none; border-radius: 5px; cursor: pointer; margin: 10px 5px; font-size: 16px; }
+  button:hover { opacity: 0.9; }
+  .preview { max-height: 500px; overflow-y: auto; }
+  .btn-download { background: #27ae60; }
+  .btn-reload { background: #95a5a6; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+</head>
+<body>
+<h1>🔄 Renombrador de Analíticos UNC Psicología</h1>
+
+<div class="drop-zone" id="dropZone">
+  <p>Arrastrá aquí tus PDFs o</p>
+  <button onclick="document.getElementById('fileInput').click()">Seleccionar archivos</button>
+  <input type="file" id="fileInput" multiple accept=".pdf" style="display:none">
+  <p style="font-size:0.9em;color:#666;">Se procesarán localmente • Nada se sube a internet</p>
+</div>
+
+<div id="result" style="display:none">
+  <h2>Vista previa de renombrado</h2>
+  <div class="preview">
+    <table id="table">
+      <thead><tr><th>Archivo original</th><th>Nombre nuevo</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  
+  <button onclick="downloadAll()" class="btn-download">⬇️ Descargar TODOS los PDFs renombrados</button>
+  <button onclick="location.reload()" class="btn-reload">Procesar otros archivos</button>
+</div>
+
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+const tbody = document.querySelector('#table tbody');
+let processedFiles = [];   // Aquí guardamos los File originales + nuevo nombre
+
+dropZone.addEventListener('dragover', e => { 
+  e.preventDefault(); 
+  dropZone.classList.add('dragover'); 
+});
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', e => { 
+  e.preventDefault(); 
+  dropZone.classList.remove('dragover'); 
+  handleFiles(e.dataTransfer.files); 
+});
+fileInput.addEventListener('change', e => handleFiles(e.target.files));
+
+async function handleFiles(files) {
+  processedFiles = [];
+  tbody.innerHTML = '';
+  document.getElementById('result').style.display = 'block';
+
+  for (let file of files) {
+    if (!file.name.toLowerCase().endsWith('.pdf')) continue;
+
+    // Leemos solo las primeras páginas con pdf.js para extraer el nombre
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    let fullText = '';
+
+    for (let i = 1; i <= Math.min(3, pdf.numPages); i++) {
+      const page = await pdf.getPage(i);
+      const textContent = await page.getTextContent();
+      fullText += textContent.items.map(item => item.str).join(' ') + '\n';
+    }
+
+    const regex = /certifica que\s+([A-ZÁÉÍÓÚÑ\s,]+?)\s*,\s*Legajo Nº/i;
+    const match = fullText.match(regex);
+    let newName = file.name;
+
+    if (match && match[1]) {
+      let nombreCompleto = match[1].trim();
+      nombreCompleto = nombreCompleto.replace(/\s+/g, ' ').trim();
+      nombreCompleto = nombreCompleto.replace(/,\s*$/, '');
+      nombreCompleto = nombreCompleto.replace(/[\/\\:*?"<>|]/g, '');
+      newName = `${nombreCompleto}.pdf`;
+    } else {
+      newName = `SIN_NOMBRE_${file.name}`;
+    }
+
+    // Guardamos el File original + el nuevo nombre
+    processedFiles.push({ file: file, newName: newName });
+
+    const row = document.createElement('tr');
+    row.innerHTML = `<td>${file.name}</td><td><strong>${newName}</strong></td>`;
+    tbody.appendChild(row);
+  }
+}
+
+// Descarga segura usando el File original
+function downloadAll() {
+  if (processedFiles.length === 0) {
+    alert("No hay archivos procesados.");
+    return;
+  }
+
+  processedFiles.forEach((item, index) => {
+    setTimeout(() => {
+      const link = document.createElement('a');
+      // Creamos un nuevo File con el nombre deseado (el contenido es idéntico)
+      const newFile = new File([item.file], item.newName, { type: item.file.type });
+      
+      const url = URL.createObjectURL(newFile);
+      link.href = url;
+      link.download = item.newName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    }, index * 350); // pausa entre descargas para no saturar el navegador
+  });
+}
+</script>
+</body>
+</html>

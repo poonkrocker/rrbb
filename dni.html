@@ -1,0 +1,265 @@
+
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Syne:wght@500;700&display=swap');
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body { font-family: 'Syne', var(--font-sans), sans-serif; }
+
+.wrap {
+  padding: 2rem 1.5rem;
+  min-height: 400px;
+}
+
+.header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 1.75rem;
+}
+
+.badge {
+  font-family: 'IBM Plex Mono', var(--font-mono), monospace;
+  font-size: 11px;
+  background: var(--color-background-secondary);
+  color: var(--color-text-secondary);
+  border: 0.5px solid var(--color-border-tertiary);
+  border-radius: 4px;
+  padding: 3px 8px;
+  letter-spacing: 0.04em;
+}
+
+h1 {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  letter-spacing: -0.03em;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 600px) {
+  .grid { grid-template-columns: 1fr; }
+}
+
+.panel-label {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+  margin-bottom: 8px;
+}
+
+textarea {
+  width: 100%;
+  min-height: 220px;
+  resize: vertical;
+  font-family: 'IBM Plex Mono', var(--font-mono), monospace;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--color-text-primary);
+  background: var(--color-background-primary);
+  border: 0.5px solid var(--color-border-secondary);
+  border-radius: var(--border-radius-md);
+  padding: 12px 14px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+textarea:focus { border-color: var(--color-border-primary); }
+
+#output {
+  background: var(--color-background-secondary);
+  border: 0.5px solid var(--color-border-tertiary);
+  cursor: pointer;
+  position: relative;
+}
+
+#output:hover { border-color: var(--color-border-secondary); }
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+button {
+  font-family: 'Syne', var(--font-sans), sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 7px 16px;
+  border-radius: var(--border-radius-md);
+  border: 0.5px solid var(--color-border-secondary);
+  background: transparent;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition: background 0.12s, transform 0.08s;
+}
+
+button:hover { background: var(--color-background-secondary); }
+button:active { transform: scale(0.97); }
+
+.btn-copy {
+  border-color: var(--color-border-primary);
+}
+
+.btn-clear {
+  color: var(--color-text-secondary);
+}
+
+.stat {
+  font-family: 'IBM Plex Mono', var(--font-mono), monospace;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin-left: auto;
+}
+
+.stat span {
+  color: var(--color-text-primary);
+  font-weight: 500;
+}
+
+.toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(20px);
+  background: var(--color-text-primary);
+  color: var(--color-background-primary);
+  font-size: 13px;
+  padding: 8px 18px;
+  border-radius: var(--border-radius-md);
+  opacity: 0;
+  transition: opacity 0.2s, transform 0.2s;
+  pointer-events: none;
+  font-family: 'Syne', sans-serif;
+  white-space: nowrap;
+}
+
+.toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.hint {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  margin-top: 6px;
+  font-family: 'IBM Plex Mono', var(--font-mono), monospace;
+}
+</style>
+
+<div class="wrap">
+  <div class="header">
+    <h1>Limpiador de DNI</h1>
+    <span class="badge">AR · 8 dígitos</span>
+  </div>
+
+  <div class="grid">
+    <div>
+      <div class="panel-label">Entrada (pegá acá)</div>
+      <textarea id="input" placeholder="Pegá DNIs en cualquier formato&#10;&#10;23.456.789&#10;23 456 789&#10;DNI: 23456789&#10;Ramírez Juan 23.456.789" spellcheck="false"></textarea>
+      <div class="hint">Acepta puntos, espacios, guiones, texto libre</div>
+    </div>
+
+    <div>
+      <div class="panel-label">Resultado · clic para copiar</div>
+      <textarea id="output" readonly placeholder="Los DNIs limpios aparecen acá..." spellcheck="false"></textarea>
+      <div class="hint" id="click-hint"></div>
+    </div>
+  </div>
+
+  <div class="actions">
+    <button class="btn-copy" id="btn-copy">Copiar resultado</button>
+    <button class="btn-clear" id="btn-clear">Limpiar todo</button>
+    <div class="stat" id="stat"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast">Copiado al portapapeles</div>
+
+<script>
+const input = document.getElementById('input');
+const output = document.getElementById('output');
+const stat = document.getElementById('stat');
+const toast = document.getElementById('toast');
+const hint = document.getElementById('click-hint');
+
+function extractDNIs(text) {
+  const lines = text.split('\n');
+  const results = [];
+
+  for (const line of lines) {
+    const stripped = line.trim();
+    if (!stripped) continue;
+
+    const matches = stripped.match(/\b\d[\d.\- ]{6,}\d\b/g);
+    if (!matches) continue;
+
+    for (const m of matches) {
+      const digits = m.replace(/[.\- ]/g, '');
+      if (digits.length >= 7 && digits.length <= 8) {
+        const padded = digits.padStart(8, '0');
+        results.push(padded);
+      }
+    }
+  }
+
+  const unique = [...new Set(results)];
+  return unique;
+}
+
+function process() {
+  const raw = input.value;
+  if (!raw.trim()) {
+    output.value = '';
+    stat.innerHTML = '';
+    hint.textContent = '';
+    return;
+  }
+
+  const dnis = extractDNIs(raw);
+  output.value = dnis.join('\n');
+
+  if (dnis.length > 0) {
+    stat.innerHTML = `<span>${dnis.length}</span> DNI${dnis.length !== 1 ? 's' : ''} encontrado${dnis.length !== 1 ? 's' : ''}`;
+    hint.textContent = 'Clic en el resultado para copiar';
+  } else {
+    stat.innerHTML = 'Sin DNIs detectados';
+    hint.textContent = '';
+  }
+}
+
+function copyText() {
+  const text = output.value;
+  if (!text) return;
+  navigator.clipboard.writeText(text).then(() => showToast());
+}
+
+function showToast() {
+  toast.classList.add('show');
+  setTimeout(() => toast.classList.remove('show'), 1800);
+}
+
+input.addEventListener('input', process);
+input.addEventListener('paste', () => setTimeout(process, 0));
+
+output.addEventListener('click', copyText);
+document.getElementById('btn-copy').addEventListener('click', copyText);
+
+document.getElementById('btn-clear').addEventListener('click', () => {
+  input.value = '';
+  output.value = '';
+  stat.innerHTML = '';
+  hint.textContent = '';
+  input.focus();
+});
+</script>

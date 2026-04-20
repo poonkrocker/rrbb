@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Cervezas y Vinos - Arrabbiata</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    :root {
+      --bg-crema: #F0E6D0;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden; /* 🚫 sin scroll */
+    }
+
+    body {
+      background-color: var(--bg-crema);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .wrapper {
+      max-width: 100%;
+      padding: 10px;
+    }
+
+    .wrapper img {
+      display: block;
+      max-width: 100%;
+      max-height: 100vh; /* evita que la imagen genere scroll */
+      height: auto;
+      margin: 0 auto;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <img src="https://arrabbiata.com.ar/img/vyc.png" alt="Carta de cervezas y vinos">
+  </div>
+</body>
+</html>
