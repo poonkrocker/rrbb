@@ -876,10 +876,10 @@ footer {
         
         <!-- Menu Section -->
         <section id="carta" class="section">
-        <div class="menu-container">
             <?php if (!$is_open): ?>
                 <div class="closed-notice active"><?php echo $closed_message; ?></div>
             <?php endif; ?>
+        <div class="menu-container">
             <h2>Nuestra Carta</h2>
 
             <nav class="category-submenu">
@@ -1030,7 +1030,7 @@ $stmt->execute([
                     </div>
                 <?php endif; ?>
             <?php endforeach; ?>
-        </div>
+        </div><!-- /.menu-container -->
     </section>
 
         <!-- Floating Cart -->
@@ -1047,6 +1047,19 @@ $stmt->execute([
             <h3>Tu Pedido</h3>
             <div class="input-group">
                 <input type="text" id="customerName" placeholder="Nombre para el pedido" required>
+            </div>
+            <div class="input-group">
+                <div class="delivery-toggle">
+                    <button type="button" class="delivery-btn active" id="btnRetiro" onclick="setDelivery('retiro')">🏪 Retiro en local</button>
+                    <button type="button" class="delivery-btn" id="btnEnvio" onclick="setDelivery('envio')">🛵 Envío a domicilio</button>
+                </div>
+                <div id="addressGroup" style="display:none">
+                    <div class="address-row">
+                        <input type="text" id="deliveryAddress" placeholder="Dirección de entrega (ej: Av. Colón 1234)">
+                        <button type="button" id="btnVerificar" onclick="verificarDistancia()">Verificar</button>
+                    </div>
+                    <div id="deliveryFeedback" class="delivery-feedback" style="display:none"></div>
+                </div>
             </div>
             <div class="input-group">
                 <select id="paymentMethod" required>
@@ -1438,11 +1451,23 @@ function normalizePay(str){
     itemCount += item.quantity;
   });
 
-  // Limpiar mensajes y posible recargo previo
+  // Limpiar mensajes y posible recargo/envío previo
   creditWarning.classList.remove('active');
   transferWarning.classList.remove('active');
   const prevSurcharge = cartItems.querySelector('.cart-surcharge');
   if (prevSurcharge) prevSurcharge.remove();
+  const prevShipping = cartItems.querySelector('.cart-shipping');
+  if (prevShipping) prevShipping.remove();
+
+  // Ítem de envío (si fue verificado)
+  if (deliveryType === 'envio' && deliveryVerified && deliveryCost > 0) {
+    const kmStr = deliveryKm.toFixed(1).replace('.', ',');
+    const shippingRow = document.createElement('div');
+    shippingRow.className = 'cart-item cart-shipping';
+    shippingRow.innerHTML = `<span>🛵 Envío (${kmStr} km)</span><span>$${deliveryCost.toFixed(2)}</span>`;
+    cartItems.appendChild(shippingRow);
+    total += deliveryCost;
+  }
 
   // Método de pago
   const pm = normalizePay(paymentMethod);
@@ -1510,15 +1535,150 @@ function normalizePay(str){
             closeCart();
         }
 
+        // ---- Tipo de entrega ----
+        // ---- Coordenadas del local (27 de abril 798, Córdoba) ----
+        const LOCAL_LAT = -31.41389;
+        const LOCAL_LNG = -64.19514;
+
+        // ---- Tarifa de envío ----
+        // $2500 hasta 2 km, +$500 cada 500m adicionales
+        function calcShipping(km) {
+            if (km <= 2) return 2500;
+            const extra = Math.ceil((km - 2) / 0.5);
+            return 2500 + extra * 500;
+        }
+
+        // ---- Estado del envío verificado ----
+        let deliveryType     = 'retiro';
+        let deliveryVerified = false;   // true cuando la distancia fue confirmada
+        let deliveryKm       = 0;
+        let deliveryCost     = 0;
+
+        function setDelivery(type) {
+            deliveryType = type;
+            deliveryVerified = false;
+            deliveryKm   = 0;
+            deliveryCost = 0;
+            document.getElementById('btnRetiro').classList.toggle('active', type === 'retiro');
+            document.getElementById('btnEnvio').classList.toggle('active', type === 'envio');
+            document.getElementById('addressGroup').style.display = type === 'envio' ? 'block' : 'none';
+            if (type === 'retiro') {
+                document.getElementById('deliveryAddress').value = '';
+                hideFeedback();
+            }
+            updateCartUI();
+        }
+
+        function hideFeedback() {
+            const fb = document.getElementById('deliveryFeedback');
+            fb.style.display = 'none';
+            fb.textContent = '';
+            fb.className = 'delivery-feedback';
+        }
+
+        function showFeedback(msg, type) {
+            // type: 'loading' | 'ok' | 'warn' | 'error'
+            const fb = document.getElementById('deliveryFeedback');
+            fb.style.display = 'block';
+            fb.textContent = msg;
+            fb.className = 'delivery-feedback df-' + type;
+        }
+
+        async function verificarDistancia() {
+            const address = document.getElementById('deliveryAddress').value.trim();
+            if (!address) { showFeedback('Ingresá una dirección primero.', 'warn'); return; }
+
+            const btn = document.getElementById('btnVerificar');
+            btn.disabled = true;
+            btn.textContent = '...';
+            showFeedback('Buscando dirección…', 'loading');
+            deliveryVerified = false;
+
+            try {
+                // 1) Geocodificar con Nominatim — agregamos "Córdoba, Argentina" para mejorar resultados locales
+                const query = encodeURIComponent(address + ', Córdoba, Argentina');
+                const geoRes = await fetch(
+                    `https://nominatim.openstreetmap.org/search?q=${query}&format=json&limit=1`,
+                    { headers: { 'Accept-Language': 'es' } }
+                );
+                const geoData = await geoRes.json();
+
+                if (!geoData.length) {
+                    showFeedback('No encontramos esa dirección. Probá escribirla de otra forma.', 'error');
+                    btn.disabled = false; btn.textContent = 'Verificar';
+                    return;
+                }
+
+                const destLat = parseFloat(geoData[0].lat);
+                const destLng = parseFloat(geoData[0].lon);
+
+                // 2) Calcular distancia con OSRM (ruta real en auto)
+                const osrmRes = await fetch(
+                    `https://router.project-osrm.org/route/v1/driving/${LOCAL_LNG},${LOCAL_LAT};${destLng},${destLat}?overview=false`
+                );
+                const osrmData = await osrmRes.json();
+
+                if (osrmData.code !== 'Ok' || !osrmData.routes.length) {
+                    showFeedback('No pudimos calcular la ruta. Intentá de nuevo.', 'error');
+                    btn.disabled = false; btn.textContent = 'Verificar';
+                    return;
+                }
+
+                const meters = osrmData.routes[0].distance;
+                deliveryKm   = meters / 1000;
+                deliveryCost = calcShipping(deliveryKm);
+                deliveryVerified = true;
+
+                const kmStr = deliveryKm.toFixed(1).replace('.', ',');
+                showFeedback(
+                    `📍 ${kmStr} km — Envío: $${deliveryCost.toLocaleString('es-AR')}`,
+                    'ok'
+                );
+                updateCartUI();
+
+            } catch (e) {
+                showFeedback('Error de conexión. Verificá tu internet e intentá de nuevo.', 'error');
+            }
+
+            btn.disabled = false;
+            btn.textContent = 'Verificar';
+        }
+
+        // Limpiar verificación si el usuario edita la dirección después
+        document.addEventListener('DOMContentLoaded', function() {
+            const addrInput = document.getElementById('deliveryAddress');
+            if (addrInput) {
+                addrInput.addEventListener('input', function() {
+                    if (deliveryVerified) {
+                        deliveryVerified = false;
+                        deliveryKm   = 0;
+                        deliveryCost = 0;
+                        hideFeedback();
+                        updateCartUI();
+                    }
+                });
+            }
+        });
+
         function sendOrder() {
   const cart = JSON.parse(localStorage.getItem('cart')) || [];
   const customerName = document.getElementById('customerName').value.trim();
   const extraComments = (document.getElementById('extraComments')?.value || '').trim();
   const paymentMethod = document.getElementById('paymentMethod').value;
+  const address = document.getElementById('deliveryAddress')?.value.trim() || '';
 
   if (!customerName) { alert('Por favor ingresa tu nombre para el pedido'); return; }
+  if (deliveryType === 'envio') {
+      if (!address) { alert('Por favor ingresá la dirección de entrega'); return; }
+      if (!deliveryVerified) { alert('Por favor verificá la dirección de entrega antes de enviar el pedido'); return; }
+  }
   if (!paymentMethod) { alert('Por favor selecciona una forma de pago'); return; }
   if (cart.length === 0) { alert('El carrito está vacío'); return; }
+
+  const kmStr  = deliveryKm.toFixed(1).replace('.', ',');
+  const entrega = deliveryType === 'envio'
+    ? `🛵 *Envío a domicilio* (${kmStr} km)\nDirección: ${address}`
+    : `🏪 *Retiro en local* (27 de abril 798)`;
 
   let message = `Hola, soy *${customerName}* y quisiera hacer el siguiente pedido:\n\n`;
   let total = 0;
@@ -1526,7 +1686,6 @@ function normalizePay(str){
   cart.forEach(item => {
     let itemTotal = item.price * item.quantity;
     let displayName = item.name;
-
     if (item.subproducts && item.subproducts.length > 0) {
       displayName += ` (${item.subproducts.map(s => s.name).join(', ')})`;
     }
@@ -1534,14 +1693,17 @@ function normalizePay(str){
       displayName += ` + ${item.dependentPizza.name}`;
       itemTotal += item.dependentPizza.price * item.quantity;
     }
-
     message += `- ${displayName} x${item.quantity}: $${itemTotal.toFixed(2)}\n`;
     total += itemTotal;
   });
 
-  const pm = normalizePay(paymentMethod);
+  // Costo de envío
+  if (deliveryType === 'envio' && deliveryVerified) {
+    message += `- Envío a domicilio (${kmStr} km) x1: $${deliveryCost.toFixed(2)}\n`;
+    total += deliveryCost;
+  }
 
-  // Crédito: sumar ítem "Recargo TC" y recalcular total
+  const pm = normalizePay(paymentMethod);
   if (pm === 'credito') {
     const surcharge = +(total * 0.10).toFixed(2);
     message += `- Recargo TC x1: $${surcharge.toFixed(2)}\n`;
@@ -1554,7 +1716,7 @@ function normalizePay(str){
     message += `\n\n*Comentarios:* ${extraComments}`;
   }
 
-  message += `\n\nTotal: $${total.toFixed(2)}\nForma de pago: ${paymentMethod}`;
+  message += `\n\n${entrega}\nTotal: $${total.toFixed(2)}\nForma de pago: ${paymentMethod}`;
 
   window.open(`https://wa.me/5493517548030?text=${encodeURIComponent(message)}`, '_blank');
   clearCart();
