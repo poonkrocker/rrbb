@@ -246,7 +246,7 @@ img { max-width: 100%; height: auto; display: block; }
   background: var(--rojo); color: #fff; text-align: center;
   padding: 12px; font-size: 1.1rem;
   font-family: var(--font-display);
-  position: sticky; top: 0; z-index: 1001;
+  position: fixed; top: 0; left: 0; z-index: 1001;
   border-radius: 0;
   box-shadow: 0 3px 0 var(--rojo-d);
   line-height: 1.2;
