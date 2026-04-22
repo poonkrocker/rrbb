@@ -246,10 +246,12 @@ img { max-width: 100%; height: auto; display: block; }
   background: var(--rojo); color: #fff; text-align: center;
   padding: 12px; font-size: 1.1rem;
   font-family: var(--font-display);
-  position: sticky; top: 0; z-index: 1000;
+  position: sticky; top: 0; z-index: 1001;
   border-radius: 0;
   box-shadow: 0 3px 0 var(--rojo-d);
   line-height: 1.2;
+  width: 100%;
+  left: 0;
 }
 .closed-notice.active { display: block; }
 @media (max-width: 768px) { .closed-notice { font-size: .9rem; line-height: 1.3; } }
