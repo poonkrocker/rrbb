@@ -244,14 +244,15 @@ img { max-width: 100%; height: auto; display: block; }
 .closed-notice {
   display: none;
   background: var(--rojo); color: #fff; text-align: center;
-  padding: 12px; font-size: 1.1rem;
-  font-family: var(--font-display);
-  position: fixed; top: 0; left: 0; z-index: 1001;
-  border-radius: 0;
+  padding: 10px 16px; font-size: .95rem;
+  font-family: var(--font-body);        /* ← cambiá a font-body, más compacta */
+  position: fixed; top: 0; left: 0; right: 0; /* ← fixed en lugar de sticky */
+  z-index: 1001;
   box-shadow: 0 3px 0 var(--rojo-d);
-  line-height: 1.2;
+  line-height: 1.4;
   width: 100%;
-  left: 0;
+  word-break: break-word;              /* ← evita desborde horizontal */
+  overflow-wrap: break-word;           /* ← idem */
 }
 .closed-notice.active { display: block; }
 @media (max-width: 768px) { .closed-notice { font-size: .9rem; line-height: 1.3; } }
