@@ -416,11 +416,11 @@ try {
 </style>
 </head>
 <body>
+    <?php if (!$is_open): ?>
+        <div class="closed-notice active"><?php echo $closed_message; ?></div>
+    <?php endif; ?>
     <section class="section">
         <div class="menu-container">
-            <?php if (!$is_open): ?>
-                <div class="closed-notice active"><?php echo $closed_message; ?></div>
-            <?php endif; ?>
             <h2>Nuestra Carta</h2>
 
             <nav class="category-submenu">
@@ -851,9 +851,9 @@ try {
             closeCart();
         }
 
-        // ---- Coordenadas del local ----
-        const LOCAL_LAT = -31.415915;
-        const LOCAL_LNG = -64.188624;
+        // ---- Coordenadas del local (27 de abril 798, Córdoba) ----
+        const LOCAL_LAT = -31.41389;
+        const LOCAL_LNG = -64.19514;
 
         function calcShipping(km) {
             if (km <= 2) return 2500;
