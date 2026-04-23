@@ -16,46 +16,47 @@
 
 /* ===== VARIABLES ===== */
 :root {
-  /* Colores del local real */
-  --ocre:        #D4B483;        /* fachada / paredes exteriores */
-  --ocre-d:      #B8955A;        /* fachada oscura */
-  --azul-elec:   #1A5FBF;        /* marcos de puertas y ventanas */
-  --azul-barra:  #2F7BD6;        /* mostrador / barra */
+  --ocre:        #D4B483;
+  --ocre-d:      #B8955A;
+  --azul-elec:   #1A5FBF;
+  --azul-barra:  #2F7BD6;
   --azul-barra-d:#1A5FAA;
-  --rojo:        #CC1414;        /* cartel del local, estructura interior */
+  --rojo:        #CC1414;
   --rojo-d:      #A50E0E;
   --rojo-f:      #D73828;
-  --rojo-neon:   #E8291A;        /* cartel neon noche */
-  --blanco:      #F8F6F2;        /* paredes interiores / azulejos */
-  --crema:       #F0E6D0;        /* fondo base */
-  --gris-piso:   #C8CBD0;        /* piso gris del interior */
+  --rojo-neon:   #E8291A;
+  --blanco:      #F8F6F2;
+  --crema:       #F0E6D0;
+  --gris-piso:   #C8CBD0;
   --marron:      #2b1a0a;
   --amarillo:    #FDB740;
   --verde-wa:    #25D366;
   --verde-wa-d:  #128C7E;
   --radius:      10px;
 
-  /* Tipografia */
   --font-display: 'Alberdini', 'DM Serif Display', serif;
   --font-body:    'DM Sans', Arial, sans-serif;
 }
 
 /* ===== RESET BASE ===== */
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
-/* IMPORTANTE: overflow-x NO va en html ni body porque rompe position:sticky.
-   El clip horizontal lo maneja el layout propio de cada sección. */
-html { scroll-behavior: smooth; }
+html {
+  scroll-behavior: smooth;
+  max-width: 100vw;
+  overflow-x: hidden;
+}
 body {
   background: var(--crema);
   font-family: var(--font-body);
   color: var(--marron);
   -webkit-font-smoothing: antialiased;
+  max-width: 100vw;
+  overflow-x: hidden;
 }
 a { color: inherit; text-decoration: none; }
 img { max-width: 100%; height: auto; display: block; }
 
 /* ===== CONTENEDOR PRINCIPAL ===== */
-/* overflow debe quedar en default (visible) para que position:sticky funcione en los hijos */
 .container {
   width: calc(100vw * 8 / 9);
   max-width: 1400px;
@@ -122,7 +123,6 @@ img { max-width: 100%; height: auto; display: block; }
   position: relative; overflow: hidden;
   padding: 0; min-height: 100vh;
 }
-/* Textura de pared: grilla fina como los azulejos interiores */
 #home::before {
   content: '';
   position: absolute; inset: 0;
@@ -132,7 +132,6 @@ img { max-width: 100%; height: auto; display: block; }
   background-size: 40px 40px;
   z-index: 1; pointer-events: none;
 }
-/* Luz azul sutil como reflejo de los marcos */
 #home::after {
   content: '';
   position: absolute; inset: 0;
@@ -165,7 +164,7 @@ img { max-width: 100%; height: auto; display: block; }
   box-shadow: 4px 4px 0 rgba(0,0,0,.2);
 }
 
-/* ===== NOSOTROS — azul del local ===== */
+/* ===== NOSOTROS ===== */
 #nosotros {
   background: var(--azul-elec);
   color: #fff;
@@ -173,7 +172,6 @@ img { max-width: 100%; height: auto; display: block; }
   position: relative;
   overflow: hidden;
 }
-/* Patron de azulejos */
 #nosotros::before {
   content: '';
   position: absolute; inset: 0;
@@ -214,7 +212,6 @@ img { max-width: 100%; height: auto; display: block; }
 
 .menu-container {
   max-width: 1200px; margin: 0 auto; position: relative;
-  /* Azulejos blancos con grilla roja — como el interior real */
   background: var(--blanco) !important;
   background-image:
     linear-gradient(rgba(204,20,20,.15) 1px, transparent 1px),
@@ -224,6 +221,10 @@ img { max-width: 100%; height: auto; display: block; }
   border: 5px solid var(--rojo);
   padding: 14px 20px 28px;
   box-shadow: 8px 8px 0 var(--rojo-d);
+  /* Evita que hijos desborden horizontalmente */
+  overflow-x: hidden;
+  width: 100%;
+  box-sizing: border-box;
 }
 .menu-container h2 {
   text-align: center;
@@ -243,19 +244,32 @@ img { max-width: 100%; height: auto; display: block; }
 /* ===== AVISO CERRADO ===== */
 .closed-notice {
   display: none;
-  background: var(--rojo); color: #fff; text-align: center;
-  padding: 10px 16px; font-size: .95rem;
-  font-family: var(--font-body);        /* ← cambiá a font-body, más compacta */
-  position: fixed; top: 0; left: 0; right: 0; /* ← fixed en lugar de sticky */
+  background: var(--rojo);
+  color: #fff;
+  text-align: center;
+  padding: 10px 16px;
+  font-size: .95rem;
+  font-family: var(--font-body);
+  font-weight: 500;
+  /* FIXED: queda pegado arriba al hacer scroll */
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
   z-index: 1001;
   box-shadow: 0 3px 0 var(--rojo-d);
-  line-height: 1.4;
-  width: 100%;
-  word-break: break-word;              /* ← evita desborde horizontal */
-  overflow-wrap: break-word;           /* ← idem */
+  line-height: 1.5;
+  /* Ocupa todo el ancho sin desbordar */
+  width: 100vw;
+  max-width: 100vw;
+  box-sizing: border-box;
+  word-break: break-word;
+  overflow-wrap: break-word;
 }
 .closed-notice.active { display: block; }
-@media (max-width: 768px) { .closed-notice { font-size: .9rem; line-height: 1.3; } }
+@media (max-width: 768px) {
+  .closed-notice { font-size: .85rem; padding: 8px 12px; line-height: 1.5; }
+}
 
 /* ===== SUBMENU CATEGORIAS ===== */
 .category-submenu {
@@ -264,7 +278,9 @@ img { max-width: 100%; height: auto; display: block; }
   border-radius: 0;
   padding: 6px 8px; margin: 0 0 22px;
   display: flex; justify-content: center;
-  width: 100%; transition: none;
+  width: 100%;
+  box-sizing: border-box;
+  transition: none;
   overflow-x: hidden;
   box-shadow: 0 3px 0 var(--rojo-d);
 }
@@ -323,8 +339,8 @@ img { max-width: 100%; height: auto; display: block; }
   cursor: pointer;
   position: relative;
   transition: background .15s ease, transform .15s ease;
-  overflow: visible; /* necesario para que la etiqueta semanal no se corte */
-  clip-path: inset(0 0 0 0); /* recorta visualmente sin romper position:absolute de hijos */
+  overflow: visible;
+  clip-path: inset(0 0 0 0);
 }
 .pizza-item:hover {
   background: #FDECEA;
@@ -332,7 +348,6 @@ img { max-width: 100%; height: auto; display: block; }
   z-index: 2;
   box-shadow: 0 4px 16px rgba(204,20,20,.18);
 }
-/* Wrapper que contiene la imagen y la etiqueta diagonal */
 .pizza-item .img-wrapper {
   position: relative;
   overflow: hidden;
@@ -368,7 +383,7 @@ img { max-width: 100%; height: auto; display: block; }
   font-size: 1.2rem; color: var(--rojo);
 }
 
-/* Etiqueta semanal — vive dentro de .img-wrapper, que tiene overflow:hidden */
+/* Etiqueta semanal */
 .weekly-special-label {
   position: absolute; top: 18px; right: -26px;
   background: var(--rojo); color: #fff;
@@ -380,9 +395,7 @@ img { max-width: 100%; height: auto; display: block; }
   box-shadow: 0 2px 6px rgba(0,0,0,.2);
   white-space: nowrap;
   pointer-events: none;
-  /* Clip propio: la etiqueta no necesita salir del card */
 }
-
 
 /* Boton vegano */
 .vegan-button {
@@ -582,7 +595,7 @@ body.secret-mode .category-submenu li.secret-link {
   display: flex !important; justify-content: center; flex-basis: 100%; width: 100%; margin-top: 6px;
 }
 
-/* ===== UBICACION — azul barra ===== */
+/* ===== UBICACION ===== */
 #ubicacion {
   background: var(--azul-barra); flex-direction: column; padding: 80px 20px;
   position: relative; overflow: hidden;
@@ -704,19 +717,19 @@ footer {
 /* ===== CATEGORY SECTION ===== */
 .category-section { margin-bottom: 28px; }
 
-/* ===== SCROLL SUAVE ===== */
+/* ===== SCROLL ===== */
 html {
   scroll-behavior: smooth;
-  overscroll-behavior-y: contain; /* rebote suave al llegar al final */
+  overscroll-behavior-y: contain;
 }
-/* Scroll momentum en iOS */
 .container,
 .main-container,
 .menu-container,
 .cart-items {
   -webkit-overflow-scrolling: touch;
 }
-/* ===== SELECTOR DE ENTREGA (modal carrito) ===== */
+
+/* ===== SELECTOR DE ENTREGA ===== */
 .delivery-toggle {
   display: flex; gap: 6px; margin-bottom: 10px;
 }
@@ -771,7 +784,6 @@ html {
 }
 .address-row input {
   flex: 1;
-  /* hereda los estilos de #customerName, #extraComments */
   padding: 10px 14px;
   border: 2px solid var(--azul-elec);
   border-radius: 2px;
