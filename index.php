@@ -837,7 +837,7 @@ footer {
                 <li><a href="#nosotros">Nosotros</a></li>
                 <li><a href="#carta">Carta</a></li>
                 <li><a href="#ubicacion">Ubicación</a></li>
-                <li><a href="#tienda">Ustedes</a></li>
+
             </ul>
         </nav>
         
@@ -1120,134 +1120,7 @@ $stmt->execute([
             </div>
         </section>
         
-         <!-- Store Section -->
-        <section id="tienda" class="section">
-           <section id="tienda">
-  <div class="gmw-container">
-    <div class="gmw-header">
-      <div class="gmw-title">
-        <h2>Ustedes</h2>
-        
-      </div>
-      <div class="gmw-score" aria-label="Puntuación promedio">
-        <div class="gmw-rating-value" id="gmwAvg">—</div>
-        <div class="gmw-stars" id="gmwStars"></div>
-        <div class="gmw-count" id="gmwCount">— reseñas</div>
-      </div>
-      <div class="gmw-actions">
-        <a id="gmwWrite" class="gmw-btn" target="_blank" rel="noopener">Escribir reseña</a>
-        <a id="gmwView"  class="gmw-link" target="_blank" rel="noopener">Ver en Google</a>
-      </div>
-    </div>
 
-    <div class="gmw-grid" id="gmwGrid">
-      <div class="gmw-skeleton"></div>
-      <div class="gmw-skeleton"></div>
-      <div class="gmw-skeleton"></div>
-      <div class="gmw-skeleton"></div>
-      <div class="gmw-skeleton"></div>
-      <div class="gmw-skeleton"></div>
-    </div>
-
-    <div class="gmw-warning" id="gmwWarn" style="display:none">
-      No pude contactar <code>reviews_proxy.php</code>. Verificá API key y Place ID.
-    </div>
-  </div>
-</section>
-</section>
-<script>
-(async function(){
-  const ENDPOINT   = 'reviews_proxy.php';   // tu proxy actual
-  const MAX_CARDS  = 6;                     // intentamos mostrar hasta 6 (Google entrega máx. 5 por llamada)
-  const $ = (s, c=document) => c.querySelector(s);
-
-  function renderStars(node, rating){
-    node.innerHTML = '';
-    for (let i=1; i<=5; i++){
-      const p = Math.max(0, Math.min(1, rating - (i-1)));
-      const span = document.createElement('span');
-      span.className = 'star';
-      span.style.setProperty('--p', Math.round(Math.min(p,1)*100) + '%');
-      node.appendChild(span);
-    }
-  }
-
-  function card(r){
-    const el   = document.createElement('article'); el.className='gmw-card';
-    const head = document.createElement('div');     head.className='gmw-head';
-
-    const img  = document.createElement('img');
-    img.className='gmw-avatar'; img.alt=''; img.referrerPolicy='no-referrer';
-    img.src = r.photo || 'data:image/gif;base64,R0lGODlhAQABAAAAACw=';
-
-    const who  = document.createElement('div');
-    const name = document.createElement('div'); name.className='gmw-author'; name.textContent = r.author || 'Usuario de Google';
-    const meta = document.createElement('div'); meta.className='gmw-meta';
-    const stars= document.createElement('span'); stars.className='gmw-stars'; renderStars(stars, r.rating || 0);
-    const time = document.createElement('span'); time.textContent = r.time ? ' · ' + r.time : '';
-    meta.append(stars, time);
-    who.append(name, meta); head.append(img, who);
-
-    const body = document.createElement('div'); body.className='gmw-body clamped';
-    body.textContent = r.text || ''; // si viene vacío igual mostramos estrellas/autor
-    const more = document.createElement('span'); more.className='gmw-more'; more.textContent='ver más';
-    more.addEventListener('click', () => {
-      body.classList.toggle('clamped');
-      more.textContent = body.classList.contains('clamped') ? 'ver más' : 'ver menos';
-    });
-
-    el.append(head, body);
-    if ((r.text||'').length > 120) el.append(more);
-    return el;
-  }
-
-  try{
-    const res = await fetch(ENDPOINT, {cache:'no-store'});
-    if (!res.ok) throw new Error('HTTP '+res.status);
-    const data = await res.json();
-
-    // Header
-    $('#gmwAvg').textContent = (data.rating || 0).toFixed(1);
-    renderStars($('#gmwStars'), data.rating || 0);
-    $('#gmwCount').textContent = (data.count || 0) + ' reseñas';
-    $('#gmwView').href  = data.url;
-    $('#gmwWrite').href = 'https://search.google.com/local/writereview?placeid=' + encodeURIComponent(data.place_id);
-
-    // Grid
-    const grid = $('#gmwGrid'); grid.innerHTML = '';
-    const list = Array.isArray(data.reviews) ? data.reviews.slice(0, MAX_CARDS) : [];
-    if (list.length){
-      list.forEach(r => grid.appendChild(card(r)));
-      // si Google trae menos que MAX_CARDS y hay calificaciones, agrego un tile "Ver todas"
-      if (list.length < MAX_CARDS && (data.count||0) > list.length) {
-        const more = document.createElement('a');
-        more.className = 'gmw-card';
-        more.href = data.url; more.target='_blank'; more.rel='noopener';
-        more.innerHTML = 'Ver más reseñas en Google →';
-        grid.appendChild(more);
-      }
-    } else {
-      const msg = document.createElement('div'); msg.className='gmw-card';
-      msg.innerHTML = (data.count > 0)
-        ? 'Este lugar tiene calificaciones, pero Google no entregó comentarios vía API. <a href="'+data.url+'" target="_blank" rel="noopener">Ver en Google</a>.'
-        : 'No hay reseñas para mostrar aún.';
-      grid.appendChild(msg);
-    }
-  }catch(e){
-    document.getElementById('gmwWarn').style.display = 'block';
-    const grid = document.getElementById('gmwGrid');
-    grid.innerHTML = '<div class="gmw-card">No se pudieron cargar las reseñas.</div>';
-    console.error(e);
-  }
-})();
-</script>
-                <div id="my-store-12345678"></div>
-                <div>
-                    <script data-cfasync="false" type="text/javascript" src="https://app.ecwid.com/script.js?12345678&data_platform=code&data_date=2023-05-01" charset="utf-8"></script>
-                    <script type="text/javascript">xProductBrowser("categoriesPerRow=3","views=grid(20,3) list(60) table(60)","categoryView=grid","searchView=list","id=my-store-12345678");</script>
-                </div>
-            </div>
-        </section>
     </div>
     <!-- Footer -->
     <footer>
