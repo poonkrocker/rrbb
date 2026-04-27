@@ -1,5 +1,5 @@
 /* ============================================================
-   ARRABBIATA — CSS rediseñado v2
+   ARRABBIATA — CSS rediseñado v2 (actualizado con fixes)
    Inspirado en el local real: fachada ocre, marcos azul eléctrico,
    interior con azulejos blancos/grilla roja, mostrador azul, estructura roja.
    ============================================================ */
@@ -221,7 +221,6 @@ img { max-width: 100%; height: auto; display: block; }
   border: 5px solid var(--rojo);
   padding: 14px 20px 28px;
   box-shadow: 8px 8px 0 var(--rojo-d);
-  /* Evita que hijos desborden horizontalmente */
   overflow-x: hidden;
   width: 100%;
   box-sizing: border-box;
@@ -241,7 +240,11 @@ img { max-width: 100%; height: auto; display: block; }
   .menu-container h2 { font-size: clamp(2rem, 8vw, 2.6rem); line-height: 1.1; }
 }
 
-/* ===== AVISO CERRADO ===== */
+/* ===== AVISO CERRADO =====
+   FIX: sticky dentro del menu-container, no fixed global.
+   Se queda pegado al tope de la carta al hacer scroll,
+   sin tapar el nav ni flotar sobre el resto de la página.
+   ============================================================ */
 .closed-notice {
   display: none;
   background: var(--rojo);
@@ -251,43 +254,56 @@ img { max-width: 100%; height: auto; display: block; }
   font-size: .95rem;
   font-family: var(--font-body);
   font-weight: 500;
-  /* FIXED: queda pegado arriba al hacer scroll */
-  position: fixed;
+  position: sticky;
   top: 0;
-  left: 0;
-  right: 0;
-  z-index: 1001;
+  z-index: 998;
   box-shadow: 0 3px 0 var(--rojo-d);
   line-height: 1.5;
-  /* Ocupa todo el ancho sin desbordar */
-  width: 100vw;
-  max-width: 100vw;
+  width: 100%;
   box-sizing: border-box;
   word-break: break-word;
   overflow-wrap: break-word;
+  /* Compensar el padding del menu-container para que llegue al borde */
+  margin: -14px -20px 14px -20px;
+  padding-left: 20px;
+  padding-right: 20px;
+  width: calc(100% + 40px);
 }
 .closed-notice.active { display: block; }
 @media (max-width: 768px) {
-  .closed-notice { font-size: .85rem; padding: 8px 12px; line-height: 1.5; }
+  .closed-notice { font-size: .85rem; padding: 8px 16px; line-height: 1.5; }
 }
 
-/* ===== SUBMENU CATEGORIAS ===== */
+/* ===== SUBMENU CATEGORIAS =====
+   FIX: centrado correcto, overflow controlado en mobile.
+   ============================================================ */
 .category-submenu {
-  position: sticky; top: 0; z-index: 998;
+  position: sticky;
+  top: 0;
+  z-index: 997;
   background: var(--rojo);
-  border-radius: 0;
-  padding: 6px 8px; margin: 0 0 22px;
-  display: flex; justify-content: center;
+  padding: 6px 8px;
+  margin: 0 0 22px;
+  display: flex;
+  justify-content: center;
   width: 100%;
   box-sizing: border-box;
-  transition: none;
-  overflow-x: hidden;
   box-shadow: 0 3px 0 var(--rojo-d);
+  overflow: hidden;
+  /* Compensar padding del menu-container */
+  margin-left: -20px;
+  margin-right: -20px;
+  width: calc(100% + 40px);
 }
 .category-submenu ul {
-  list-style: none; display: flex; flex-wrap: wrap;
-  justify-content: center; gap: 4px;
-  margin: 0; padding: 0 4px; max-width: 100%;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0 4px;
+  max-width: 100%;
 }
 .category-submenu li { position: relative; }
 .category-submenu a {
@@ -307,8 +323,17 @@ img { max-width: 100%; height: auto; display: block; }
   background: #fff; color: var(--rojo); border-color: #fff;
 }
 @media (max-width: 768px) {
-  .category-submenu { overflow-x: auto; justify-content: flex-start; }
-  .category-submenu ul { flex-wrap: nowrap; white-space: nowrap; }
+  .category-submenu {
+    justify-content: flex-start;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+  }
+  .category-submenu ul {
+    flex-wrap: nowrap;
+    white-space: nowrap;
+    padding-bottom: 2px;
+  }
 }
 
 /* ===== CATEGORIA HEADER ===== */
@@ -339,8 +364,9 @@ img { max-width: 100%; height: auto; display: block; }
   cursor: pointer;
   position: relative;
   transition: background .15s ease, transform .15s ease;
+  /* FIX: clip-path reemplazado por overflow visible con z-index,
+     el recorte del listón se maneja en .img-wrapper */
   overflow: visible;
-  clip-path: inset(0 0 0 0);
 }
 .pizza-item:hover {
   background: #FDECEA;
@@ -348,6 +374,8 @@ img { max-width: 100%; height: auto; display: block; }
   z-index: 2;
   box-shadow: 0 4px 16px rgba(204,20,20,.18);
 }
+
+/* FIX: .img-wrapper con overflow:hidden contiene el listón diagonal */
 .pizza-item .img-wrapper {
   position: relative;
   overflow: hidden;
@@ -361,6 +389,25 @@ img { max-width: 100%; height: auto; display: block; }
   display: block;
   border: 2px solid rgba(204,20,20,.12);
 }
+
+/* FIX: listón "pizza de la semana" contenido dentro de .img-wrapper */
+.weekly-special-label {
+  position: absolute;
+  top: 14px;
+  right: -28px;
+  background: var(--rojo);
+  color: #fff;
+  font-family: var(--font-display);
+  font-size: .72rem;
+  padding: 5px 42px;
+  transform: rotate(35deg);
+  letter-spacing: .08em;
+  z-index: 3;
+  box-shadow: 0 2px 6px rgba(0,0,0,.25);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 .pizza-item h3 {
   font-family: var(--font-display);
   font-size: 1.1rem;
@@ -381,20 +428,6 @@ img { max-width: 100%; height: auto; display: block; }
 .item-price {
   font-family: var(--font-display);
   font-size: 1.2rem; color: var(--rojo);
-}
-
-/* Etiqueta semanal */
-.weekly-special-label {
-  position: absolute; top: 18px; right: -26px;
-  background: var(--rojo); color: #fff;
-  font-family: var(--font-display);
-  font-size: .72rem;
-  padding: 4px 38px;
-  transform: rotate(35deg);
-  letter-spacing: .08em; z-index: 3;
-  box-shadow: 0 2px 6px rgba(0,0,0,.2);
-  white-space: nowrap;
-  pointer-events: none;
 }
 
 /* Boton vegano */
