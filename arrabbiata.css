@@ -102,11 +102,12 @@ img { max-width: 100%; height: auto; display: block; }
 }
 @media (max-width: 768px) {
   .nav-menu { top: 14px; padding: 6px 12px; }
-  .nav-menu ul { gap: 2px; }
+  .nav-menu ul { gap: 2px; justify-content: center; }
   .nav-menu a { font-size: 12px; padding: 5px 10px; }
 }
 @media (max-width: 480px) {
-  .nav-menu { width: 92%; padding: 5px 8px; box-shadow: 3px 3px 0 var(--azul-elec); }
+  /* FIX: width:auto evita que el menu se desplace del centro en mobile */
+  .nav-menu { width: auto; max-width: 96%; padding: 5px 8px; box-shadow: 3px 3px 0 var(--azul-elec); }
   .nav-menu a { font-size: 11px; padding: 4px 7px; }
 }
 
@@ -207,8 +208,9 @@ img { max-width: 100%; height: auto; display: block; }
 }
 
 /* ===== SECCION CARTA ===== */
-#carta { background: transparent; padding: 12px 20px 0; }
-#carta.section { padding-top: 12px !important; }
+/* FIX: eliminado padding-top que separaba el cartel del borde superior */
+#carta { background: transparent; padding: 0 20px; }
+#carta.section { padding-top: 0 !important; }
 
 .menu-container {
   max-width: 1200px; margin: 0 auto; position: relative;
@@ -219,19 +221,18 @@ img { max-width: 100%; height: auto; display: block; }
   background-size: 48px 48px !important;
   border-radius: 0;
   border: 5px solid var(--rojo);
-  /* padding-top: 0 para que el sticky cerrado arranque pegado al borde */
   padding: 0 20px 28px;
   box-shadow: 8px 8px 0 var(--rojo-d);
-  /* overflow:hidden recorta el sticky y el submenu correctamente */
   overflow: hidden;
   width: 100%;
   box-sizing: border-box;
 }
+/* FIX: padding-top eliminado para que el h2 no empuje el cartel hacia abajo */
 .menu-container h2 {
   text-align: center;
   font-family: var(--font-display);
-  font-size: 3.6rem; margin: 0 0 16px;
-  padding: 14px 20px 0;
+  font-size: 3.6rem; margin: 14px 0 16px;
+  padding: 0 20px;
   color: var(--rojo);
   letter-spacing: .03em;
   background: transparent;
@@ -241,12 +242,7 @@ img { max-width: 100%; height: auto; display: block; }
   .menu-container h2 { font-size: clamp(2rem, 8vw, 2.6rem); line-height: 1.1; }
 }
 
-/* ===== AVISO CERRADO =====
-   sticky al tope del menu-container, sin márgenes negativos.
-   El menu-container tiene overflow-x:hidden, así que
-   la sombra se recorta sola. Padding-top:0 en .menu-container
-   cuando está activo lo maneja el propio sticky.
-   ============================================================ */
+/* ===== AVISO CERRADO ===== */
 .closed-notice {
   display: none;
   background: var(--rojo);
@@ -259,37 +255,32 @@ img { max-width: 100%; height: auto; display: block; }
   position: sticky;
   top: 0;
   z-index: 998;
-  /* sin box-shadow para no desbordar */
   line-height: 1.5;
   width: 100%;
   box-sizing: border-box;
   word-break: break-word;
   overflow-wrap: break-word;
-  /* Sin margen negativo: el menu-container ya tiene padding-top:0
-     cuando el aviso está presente; usamos margin negativo solo
-     en los lados para alcanzar el borde del contenedor */
   margin-left: -20px;
   margin-right: -20px;
   width: calc(100% + 40px);
-  /* Espacio inferior para separar del h2 */
   margin-bottom: 0;
 }
 .closed-notice.active { display: block; }
+/* FIX: cuando el aviso está activo y precede al h2, reduce el espacio entre ambos */
+.closed-notice.active + h2 {
+  margin-top: 10px;
+}
 @media (max-width: 768px) {
   .closed-notice { font-size: .85rem; padding: 8px 16px; line-height: 1.5; }
 }
 
-/* ===== SUBMENU CATEGORIAS =====
-   sticky dentro del menu-container (que tiene overflow:hidden).
-   En desktop: centrado. En mobile: scrolleable a la izquierda.
-   ============================================================ */
+/* ===== SUBMENU CATEGORIAS ===== */
 .category-submenu {
   position: sticky;
   top: 0;
   z-index: 997;
   background: var(--rojo);
   padding: 6px 8px;
-  /* Sin margin negativo: overflow:hidden del padre lo contiene */
   margin: 0 -20px 22px -20px;
   width: calc(100% + 40px);
   box-sizing: border-box;
@@ -369,8 +360,6 @@ img { max-width: 100%; height: auto; display: block; }
   cursor: pointer;
   position: relative;
   transition: background .15s ease, transform .15s ease;
-  /* FIX: clip-path reemplazado por overflow visible con z-index,
-     el recorte del listón se maneja en .img-wrapper */
   overflow: visible;
 }
 .pizza-item:hover {
@@ -380,7 +369,6 @@ img { max-width: 100%; height: auto; display: block; }
   box-shadow: 0 4px 16px rgba(204,20,20,.18);
 }
 
-/* FIX: .img-wrapper con overflow:hidden contiene el listón diagonal */
 .pizza-item .img-wrapper {
   position: relative;
   overflow: hidden;
@@ -395,7 +383,7 @@ img { max-width: 100%; height: auto; display: block; }
   border: 2px solid rgba(204,20,20,.12);
 }
 
-/* FIX: listón "pizza de la semana" — más chico, bien contenido en .img-wrapper */
+/* FIX: listón "pizza de la semana" — valores base más conservadores */
 .weekly-special-label {
   position: absolute;
   top: 10px;
@@ -412,6 +400,26 @@ img { max-width: 100%; height: auto; display: block; }
   white-space: nowrap;
   pointer-events: none;
   line-height: 1.2;
+}
+/* FIX: en mobile se achica y se reubica para no cortarse por overflow:hidden */
+@media (max-width: 768px) {
+  .weekly-special-label {
+    top: 6px;
+    right: -4px;
+    padding: 3px 16px;
+    font-size: .55rem;
+    transform: rotate(30deg);
+    letter-spacing: .04em;
+  }
+}
+@media (max-width: 480px) {
+  .weekly-special-label {
+    top: 4px;
+    right: -2px;
+    padding: 2px 12px;
+    font-size: .48rem;
+    transform: rotate(25deg);
+  }
 }
 
 .pizza-item h3 {
@@ -638,20 +646,16 @@ body.secret-mode .category-submenu li.secret-link {
 #ubicacion {
   background: var(--azul-barra); flex-direction: column; padding: 80px 20px;
   position: relative; overflow: hidden;
-  /* Separación visible respecto al menu-container de arriba */
   margin-top: 0;
 }
-/* Separador visual entre #carta y #ubicacion */
 #carta {
   background: transparent;
-  padding: 12px 20px 0;
-  /* el padding-bottom lo pone el espacio natural entre secciones */
+  padding: 0 20px;
 }
 #carta + #ubicacion,
 .section + #ubicacion {
   margin-top: 0;
 }
-/* Espacio externo debajo de la carta */
 .menu-container {
   margin-bottom: 60px;
 }
@@ -667,13 +671,14 @@ body.secret-mode .category-submenu li.secret-link {
   width: 100%; height: 100%; border: none;
   border: 4px solid rgba(255,255,255,.4); border-radius: 2px;
 }
+/* FIX: borde azul eléctrico para diferenciar de la carta (antes era rojo) */
 .contact-info {
   max-width: 800px; width: 100%; padding: 28px 30px;
   background: rgba(255,255,255,.97);
-  border: 4px solid var(--rojo);
+  border: 4px solid var(--azul-elec);
   border-radius: 2px;
   text-align: center;
-  box-shadow: 6px 6px 0 var(--rojo-d);
+  box-shadow: 6px 6px 0 var(--azul-barra-d);
 }
 .contact-info h2 {
   font-family: var(--font-display);
