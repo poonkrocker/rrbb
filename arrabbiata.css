@@ -207,7 +207,7 @@ img { max-width: 100%; height: auto; display: block; }
 }
 
 /* ===== SECCION CARTA ===== */
-#carta { background: transparent; padding: 12px 20px 72px; }
+#carta { background: transparent; padding: 12px 20px 0; }
 #carta.section { padding-top: 12px !important; }
 
 .menu-container {
@@ -219,55 +219,60 @@ img { max-width: 100%; height: auto; display: block; }
   background-size: 48px 48px !important;
   border-radius: 0;
   border: 5px solid var(--rojo);
-  padding: 14px 20px 28px;
+  /* padding-top: 0 para que el sticky cerrado arranque pegado al borde */
+  padding: 0 20px 28px;
   box-shadow: 8px 8px 0 var(--rojo-d);
-  overflow-x: hidden;
+  /* overflow:hidden recorta el sticky y el submenu correctamente */
+  overflow: hidden;
   width: 100%;
   box-sizing: border-box;
 }
 .menu-container h2 {
   text-align: center;
   font-family: var(--font-display);
-  font-size: 3.6rem; margin: 8px 0 16px;
+  font-size: 3.6rem; margin: 0 0 16px;
+  padding: 14px 20px 0;
   color: var(--rojo);
   letter-spacing: .03em;
-  background: var(--blanco);
-  display: table;
-  padding: 0 20px;
-  margin-left: auto; margin-right: auto;
+  background: transparent;
+  display: block;
 }
 @media (max-width: 480px) {
   .menu-container h2 { font-size: clamp(2rem, 8vw, 2.6rem); line-height: 1.1; }
 }
 
 /* ===== AVISO CERRADO =====
-   FIX: sticky dentro del menu-container, no fixed global.
-   Se queda pegado al tope de la carta al hacer scroll,
-   sin tapar el nav ni flotar sobre el resto de la página.
+   sticky al tope del menu-container, sin márgenes negativos.
+   El menu-container tiene overflow-x:hidden, así que
+   la sombra se recorta sola. Padding-top:0 en .menu-container
+   cuando está activo lo maneja el propio sticky.
    ============================================================ */
 .closed-notice {
   display: none;
   background: var(--rojo);
   color: #fff;
   text-align: center;
-  padding: 10px 16px;
+  padding: 10px 20px;
   font-size: .95rem;
   font-family: var(--font-body);
   font-weight: 500;
   position: sticky;
   top: 0;
   z-index: 998;
-  box-shadow: 0 3px 0 var(--rojo-d);
+  /* sin box-shadow para no desbordar */
   line-height: 1.5;
   width: 100%;
   box-sizing: border-box;
   word-break: break-word;
   overflow-wrap: break-word;
-  /* Compensar el padding del menu-container para que llegue al borde */
-  margin: -14px -20px 14px -20px;
-  padding-left: 20px;
-  padding-right: 20px;
+  /* Sin margen negativo: el menu-container ya tiene padding-top:0
+     cuando el aviso está presente; usamos margin negativo solo
+     en los lados para alcanzar el borde del contenedor */
+  margin-left: -20px;
+  margin-right: -20px;
   width: calc(100% + 40px);
+  /* Espacio inferior para separar del h2 */
+  margin-bottom: 0;
 }
 .closed-notice.active { display: block; }
 @media (max-width: 768px) {
@@ -275,7 +280,8 @@ img { max-width: 100%; height: auto; display: block; }
 }
 
 /* ===== SUBMENU CATEGORIAS =====
-   FIX: centrado correcto, overflow controlado en mobile.
+   sticky dentro del menu-container (que tiene overflow:hidden).
+   En desktop: centrado. En mobile: scrolleable a la izquierda.
    ============================================================ */
 .category-submenu {
   position: sticky;
@@ -283,23 +289,21 @@ img { max-width: 100%; height: auto; display: block; }
   z-index: 997;
   background: var(--rojo);
   padding: 6px 8px;
-  margin: 0 0 22px;
-  display: flex;
-  justify-content: center;
-  width: 100%;
+  /* Sin margin negativo: overflow:hidden del padre lo contiene */
+  margin: 0 -20px 22px -20px;
+  width: calc(100% + 40px);
   box-sizing: border-box;
   box-shadow: 0 3px 0 var(--rojo-d);
-  overflow: hidden;
-  /* Compensar padding del menu-container */
-  margin-left: -20px;
-  margin-right: -20px;
-  width: calc(100% + 40px);
+  display: flex;
+  justify-content: center;
+  align-items: center;
 }
 .category-submenu ul {
   list-style: none;
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
+  align-items: center;
   gap: 4px;
   margin: 0;
   padding: 0 4px;
@@ -331,6 +335,7 @@ img { max-width: 100%; height: auto; display: block; }
   }
   .category-submenu ul {
     flex-wrap: nowrap;
+    justify-content: flex-start;
     white-space: nowrap;
     padding-bottom: 2px;
   }
@@ -390,22 +395,23 @@ img { max-width: 100%; height: auto; display: block; }
   border: 2px solid rgba(204,20,20,.12);
 }
 
-/* FIX: listón "pizza de la semana" contenido dentro de .img-wrapper */
+/* FIX: listón "pizza de la semana" — más chico, bien contenido en .img-wrapper */
 .weekly-special-label {
   position: absolute;
-  top: 14px;
-  right: -28px;
+  top: 10px;
+  right: -22px;
   background: var(--rojo);
   color: #fff;
   font-family: var(--font-display);
-  font-size: .72rem;
-  padding: 5px 42px;
+  font-size: .62rem;
+  padding: 4px 32px;
   transform: rotate(35deg);
-  letter-spacing: .08em;
+  letter-spacing: .06em;
   z-index: 3;
-  box-shadow: 0 2px 6px rgba(0,0,0,.25);
+  box-shadow: 0 1px 4px rgba(0,0,0,.2);
   white-space: nowrap;
   pointer-events: none;
+  line-height: 1.2;
 }
 
 .pizza-item h3 {
@@ -632,6 +638,22 @@ body.secret-mode .category-submenu li.secret-link {
 #ubicacion {
   background: var(--azul-barra); flex-direction: column; padding: 80px 20px;
   position: relative; overflow: hidden;
+  /* Separación visible respecto al menu-container de arriba */
+  margin-top: 0;
+}
+/* Separador visual entre #carta y #ubicacion */
+#carta {
+  background: transparent;
+  padding: 12px 20px 0;
+  /* el padding-bottom lo pone el espacio natural entre secciones */
+}
+#carta + #ubicacion,
+.section + #ubicacion {
+  margin-top: 0;
+}
+/* Espacio externo debajo de la carta */
+.menu-container {
+  margin-bottom: 60px;
 }
 #ubicacion::before {
   content: ''; position: absolute; inset: 0;
@@ -647,9 +669,11 @@ body.secret-mode .category-submenu li.secret-link {
 }
 .contact-info {
   max-width: 800px; width: 100%; padding: 28px 30px;
-  background: rgba(255,255,255,.96);
-  border: 3px solid rgba(255,255,255,.7); border-radius: 2px;
-  text-align: center; box-shadow: 5px 5px 0 rgba(0,0,0,.15);
+  background: rgba(255,255,255,.97);
+  border: 4px solid var(--rojo);
+  border-radius: 2px;
+  text-align: center;
+  box-shadow: 6px 6px 0 var(--rojo-d);
 }
 .contact-info h2 {
   font-family: var(--font-display);
