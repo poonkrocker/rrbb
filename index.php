@@ -1108,10 +1108,8 @@ $stmt->execute([
                 <h3>Dirección</h3>
                 <p>27 de abril 798, Córdoba</p>
                 
-                <h3>Horarios</h3>
-                <p>Lunes a Viernes: 12:00 - 15:00</p>
-                <p>Jueves, Viernes y Sábado: 20:00 - 00:00</p>
-                <p>Domingo: Cerrado</p>
+<h3>Horarios</h3>
+<p><?php echo nl2br(str_replace('<br>', "\n", formatGroupedHours($all_hours))); ?></p>
                 
                 <h3>Contacto</h3>
                 <a href="https://www.instagram.com/arrabbiata.pizza" target="_blank">@arrabbiata.pizza</a>
