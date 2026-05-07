@@ -365,23 +365,24 @@ img { max-width: 100%; height: auto; display: block; }
   font-size: 1.2rem; color: var(--rojo);
 }
 
-/* Etiqueta semanal — badge pequeño en esquina sup-izq de la imagen */
+/* Etiqueta semanal — badge recto esquina sup-izq de la imagen */
 .weekly-special-label {
   position: absolute; top: 7px; left: 7px;
   background: var(--rojo); color: #fff;
-  font-family: var(--font-display);
-  font-size: .65rem;
-  padding: 3px 8px;
+  font-family: var(--font-body);
+  font-size: .6rem;
+  font-weight: 700;
+  padding: 3px 7px;
   border-radius: 2px;
-  letter-spacing: .07em;
+  letter-spacing: .06em;
   text-transform: uppercase;
   z-index: 3;
   box-shadow: 2px 2px 0 var(--rojo-d);
-  white-space: nowrap;
+  white-space: normal;
+  word-break: break-word;
   pointer-events: none;
   max-width: 45%;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  line-height: 1.2;
 }
 
 
