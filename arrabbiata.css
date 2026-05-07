@@ -5,7 +5,7 @@
    ============================================================ */
 
 /* ===== FUENTES ===== */
-@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,500;0,9..40,700;1,9..40,300&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,500;0,9..40,700;1,9..40,300&family=Lora:ital,wght@0,400;0,500;1,400&display=swap');
 
 @font-face {
   font-family: 'Alberdini';
@@ -86,7 +86,7 @@ img { max-width: 100%; height: auto; display: block; }
 .nav-menu ul { list-style: none; display: flex; gap: 4px; }
 .nav-menu a {
   font-family: var(--font-display);
-  font-size: 14px;
+  font-size: 18px;
   font-weight: normal;
   color: var(--marron);
   padding: 6px 14px;
@@ -102,11 +102,11 @@ img { max-width: 100%; height: auto; display: block; }
 @media (max-width: 768px) {
   .nav-menu { top: 14px; padding: 6px 12px; }
   .nav-menu ul { gap: 2px; }
-  .nav-menu a { font-size: 12px; padding: 5px 10px; }
+  .nav-menu a { font-size: 15px; padding: 5px 10px; }
 }
 @media (max-width: 480px) {
   .nav-menu { width: 92%; padding: 5px 8px; box-shadow: 3px 3px 0 var(--azul-elec); }
-  .nav-menu a { font-size: 11px; padding: 4px 7px; }
+  .nav-menu a { font-size: 13px; padding: 4px 7px; }
 }
 
 /* ===== SECCIONES ===== */
@@ -204,8 +204,10 @@ img { max-width: 100%; height: auto; display: block; }
   color: #fff; letter-spacing: .02em;
 }
 .nosotros-text p {
-  font-size: 1.05rem; line-height: 1.7; margin-bottom: 20px;
-  color: rgba(255,255,255,.92); font-weight: 300;
+  font-size: 1.05rem; line-height: 1.8; margin-bottom: 20px;
+  color: rgba(255,255,255,.92);
+  font-family: 'Lora', Georgia, serif;
+  font-weight: 400;
 }
 
 /* ===== SECCION CARTA ===== */
@@ -274,9 +276,9 @@ img { max-width: 100%; height: auto; display: block; }
 .category-submenu a {
   display: inline-block;
   font-family: var(--font-display);
-  font-size: 12px; font-weight: normal;
+  font-size: 15px; font-weight: normal;
   color: rgba(255,255,255,.85);
-  padding: 4px 12px;
+  padding: 5px 14px;
   border: 1px solid rgba(255,255,255,.35);
   border-radius: 2px;
   background: transparent;
@@ -358,23 +360,23 @@ img { max-width: 100%; height: auto; display: block; }
 }
 .price-container p {
   font-family: var(--font-display);
-  font-size: 1.25rem; color: var(--rojo);
+  font-size: 1.5rem; color: var(--rojo);
 }
 .item-price {
   font-family: var(--font-display);
-  font-size: 1.2rem; color: var(--rojo);
+  font-size: 1.45rem; color: var(--rojo);
 }
 
 /* Etiqueta semanal — badge ajustado al texto, esquina sup-izq de la imagen */
 .weekly-special-label {
   position: absolute; top: 7px; left: 7px;
   background: var(--rojo); color: #fff;
-  font-family: var(--font-body);
-  font-size: .6rem;
-  font-weight: 700;
+  font-family: var(--font-display);
+  font-size: .65rem;
+  font-weight: normal;
   padding: 3px 8px;
   border-radius: 2px;
-  letter-spacing: .06em;
+  letter-spacing: .07em;
   text-transform: uppercase;
   z-index: 3;
   box-shadow: 2px 2px 0 var(--rojo-d);
