@@ -297,6 +297,10 @@ img { max-width: 100%; height: auto; display: block; }
 @media (max-width: 768px) {
   .category-submenu { overflow-x: auto; justify-content: flex-start; }
   .category-submenu ul { flex-wrap: nowrap; white-space: nowrap; }
+  .category-submenu a { font-size: 14px; padding: 5px 10px; letter-spacing: .03em; }
+}
+@media (max-width: 480px) {
+  .category-submenu a { font-size: 12px; padding: 4px 8px; letter-spacing: .02em; }
 }
 
 /* ===== CATEGORIA HEADER ===== */
