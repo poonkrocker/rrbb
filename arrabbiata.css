@@ -295,7 +295,7 @@ img { max-width: 100%; height: auto; display: block; }
   background: #fff; color: var(--rojo); border-color: #fff;
 }
 @media (max-width: 768px) {
-  .category-submenu { overflow-x: auto; justify-content: flex-start; }
+  .category-submenu { overflow-x: auto; justify-content: center; }
   .category-submenu ul { flex-wrap: nowrap; white-space: nowrap; }
   .category-submenu a { font-size: 14px; padding: 5px 10px; letter-spacing: .03em; }
 }
