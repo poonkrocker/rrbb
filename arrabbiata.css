@@ -5,7 +5,7 @@
    ============================================================ */
 
 /* ===== FUENTES ===== */
-@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,500;0,9..40,700;1,9..40,300&family=Lora:ital,wght@0,400;0,500;1,400&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,500;0,9..40,700;1,9..40,300&family=Source+Serif+4:ital,opsz,wght@0,8..60,300;0,8..60,400;0,8..60,500;1,8..60,300;1,8..60,400&display=swap');
 
 @font-face {
   font-family: 'Alberdini';
@@ -86,7 +86,7 @@ img { max-width: 100%; height: auto; display: block; }
 .nav-menu ul { list-style: none; display: flex; gap: 4px; }
 .nav-menu a {
   font-family: var(--font-display);
-  font-size: 18px;
+  font-size: 21px;
   font-weight: normal;
   color: var(--marron);
   padding: 6px 14px;
@@ -100,13 +100,13 @@ img { max-width: 100%; height: auto; display: block; }
   transform: translateY(-1px);
 }
 @media (max-width: 768px) {
-  .nav-menu { top: 14px; padding: 6px 12px; }
-  .nav-menu ul { gap: 2px; }
-  .nav-menu a { font-size: 15px; padding: 5px 10px; }
+  .nav-menu { top: 14px; padding: 6px 12px; left: 50%; transform: translateX(-50%); }
+  .nav-menu ul { gap: 2px; justify-content: center; }
+  .nav-menu a { font-size: 17px; padding: 5px 10px; }
 }
 @media (max-width: 480px) {
-  .nav-menu { width: 92%; padding: 5px 8px; box-shadow: 3px 3px 0 var(--azul-elec); }
-  .nav-menu a { font-size: 13px; padding: 4px 7px; }
+  .nav-menu { width: 92%; padding: 5px 8px; box-shadow: 3px 3px 0 var(--azul-elec); left: 50%; transform: translateX(-50%); }
+  .nav-menu a { font-size: 15px; padding: 4px 7px; }
 }
 
 /* ===== SECCIONES ===== */
@@ -163,6 +163,15 @@ img { max-width: 100%; height: auto; display: block; }
   letter-spacing: .14em;
   text-transform: uppercase;
   box-shadow: 4px 4px 0 rgba(0,0,0,.2);
+  text-align: center;
+}
+@media (max-width: 480px) {
+  .home-content p {
+    font-size: 1rem;
+    padding: 9px 18px;
+    width: 90%;
+    letter-spacing: .1em;
+  }
 }
 
 /* ===== NOSOTROS — azul del local ===== */
@@ -206,7 +215,7 @@ img { max-width: 100%; height: auto; display: block; }
 .nosotros-text p {
   font-size: 1.05rem; line-height: 1.8; margin-bottom: 20px;
   color: rgba(255,255,255,.92);
-  font-family: 'Lora', Georgia, serif;
+  font-family: 'Source Serif 4', Georgia, serif;
   font-weight: 400;
 }
 
@@ -276,7 +285,7 @@ img { max-width: 100%; height: auto; display: block; }
 .category-submenu a {
   display: inline-block;
   font-family: var(--font-display);
-  font-size: 15px; font-weight: normal;
+  font-size: 20px; font-weight: normal;
   color: rgba(255,255,255,.85);
   padding: 5px 14px;
   border: 1px solid rgba(255,255,255,.35);
