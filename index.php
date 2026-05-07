@@ -571,78 +571,7 @@ $stmt->execute([
     </section>
 
         <!-- Floating Cart -->
-        <div class="cart-container" id="cartContainer">
-            <div class="cart-button <?php echo !$is_open ? 'disabled' : ''; ?>" <?php if ($is_open): ?>onclick="toggleCart()"<?php endif; ?>>
-                🛒
-                <div class="cart-badge" id="cartCount">0</div>
-            </div>
-        </div>
-
-        <!-- Cart Modal -->
-        <div class="overlay" id="overlay" onclick="closeCart()"></div>
-        <div class="cart-modal" id="cartModal">
-            <h3>Tu Pedido</h3>
-            <div class="input-group">
-                <input type="text" id="customerName" placeholder="Nombre para el pedido" required>
-            </div>
-            <div class="input-group">
-                <div class="delivery-toggle">
-                    <button type="button" class="delivery-btn active" id="btnRetiro" onclick="setDelivery('retiro')">🏪 Retiro en local</button>
-                    <button type="button" class="delivery-btn" id="btnEnvio" onclick="setDelivery('envio')">🛵 Envío a domicilio</button>
-                </div>
-                <div id="addressGroup" style="display:none">
-                    <input type="text" id="deliveryAddress" placeholder="Dirección de entrega">
-                </div>
-            </div>
-            <div class="input-group">
-                <select id="paymentMethod" required>
-                    <option value="">Selecciona forma de pago</option>
-                    <option value="Transferencia">Transferencia</option>
-                    <option value="Efectivo">Efectivo</option>
-                    <option value="Débito">Débito</option>
-                    <option value="Crédito">Crédito</option>
-                </select>
-                <div class="credit-warning" id="creditWarning">
-                    Pago con crédito tiene un recargo del <strong>10%</strong>.
-                </div>
-                <div class="transfer-warning" id="transferWarning">
-                    Por favor realiza la transferencia al alias <strong>RRBBPIZZA</strong> a nombre de Ezequiel Urquidi.
-                </div>
-            </div>
-            <div class="cart-items" id="cartItems"></div>
-            <div class="cart-total">
-                Total: $<span id="cartTotal">0</span>
-            </div>
-            <div class="cart-actions">
-                <button class="clear-cart <?php echo !$is_open ? 'disabled' : ''; ?>" <?php if ($is_open): ?>onclick="clearCart()"<?php endif; ?>>Limpiar Carrito</button>
-                <button class="send-order <?php echo !$is_open ? 'disabled' : ''; ?>" <?php if ($is_open): ?>onclick="sendOrder()"<?php endif; ?>>Enviar por WhatsApp</button>
-            </div>
-        </div>
-
-        <!-- Subproduct Modal -->
-        <div class="subproduct-modal" id="subproductModal">
-            <h3>Selecciona tus pizzas</h3>
-            <div id="subproductSelections"></div>
-            <button onclick="confirmSubproducts()">Agregar al Carrito</button>
-            <button onclick="closeSubproductModal()">Cancelar</button>
-        </div>
-
-        <!-- Pizza Selection Modal -->
-        <div class="pizza-selection-modal" id="pizzaSelectionModal">
-            <h3>Selecciona una pizza para tu <?php echo htmlspecialchars($item['name'] ?? 'item'); ?></h3>
-            <div id="pizzaSelection">
-                <select id="pizza-select">
-                    <option value="">Selecciona una pizza</option>
-                    <?php foreach ($eligible_items as $item): ?>
-                        <option value="<?php echo $item['id']; ?>" data-name="<?php echo htmlspecialchars($item['name']); ?>" data-price="<?php echo $item['price']; ?>">
-                            <?php echo htmlspecialchars($item['name']); ?> ($<?php echo number_format($item['price'], 2); ?>)
-                        </option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
-            <button onclick="confirmPizzaSelection()">Agregar al Carrito</button>
-            <button onclick="closePizzaSelectionModal()">Cancelar</button>
-        </div>
+        <?php include 'cart_modal.php'; ?>
         
         <!-- Location Section -->
         <section id="ubicacion" class="section">
@@ -757,7 +686,7 @@ function normalizePay(str){
 
         // Cart logic
         let currentSubproductItem = null;
-        let currentPizzaSelectionItem = null;
+        let currentDependentItem = null;
 
         function addItemToCart(name, itemId, price, isVegan, hasSubproducts, requiredSelections, requiresPizza = false, pizzaSelection = null) {
             if (!isOpen) {
@@ -770,7 +699,7 @@ function normalizePay(str){
             if (hasSubproducts) {
                 openSubproductModal(itemId, displayName, price, isVegan, requiredSelections);
             } else if (requiresPizza && !pizzaSelection) {
-                openPizzaSelectionModal(itemId, displayName, price, isVegan);
+                openDependentProductModal(itemId, displayName, price, isVegan);
             } else {
                 addToCart(displayName, price, itemId, isVegan, [], pizzaSelection);
             }
@@ -942,7 +871,6 @@ function normalizePay(str){
         function sendOrder() {
   const cart = JSON.parse(localStorage.getItem('cart')) || [];
   const customerName = document.getElementById('customerName').value.trim();
-  const extraComments = (document.getElementById('extraComments')?.value || '').trim();
   const paymentMethod = document.getElementById('paymentMethod').value;
   const address = document.getElementById('deliveryAddress')?.value.trim() || '';
 
@@ -982,10 +910,6 @@ function normalizePay(str){
     total += surcharge;
   } else if (pm === 'transferencia') {
     message += `\nDatos para la transferencia: Alias: RRBBPIZZA, Nombre: Ezequiel Urquidi`;
-  }
-
-  if (extraComments) {
-    message += `\n\n*Comentarios:* ${extraComments}`;
   }
 
   message += `\n\n${entrega}\nTotal: $${total.toFixed(2)}\nForma de pago: ${paymentMethod}`;
@@ -1078,82 +1002,65 @@ function normalizePay(str){
         }
 
         // Pizza Selection Modal
-        function openPizzaSelectionModal(itemId, itemName, price, isVegan) {
+        function openDependentProductModal(itemId, itemName, price, isVegan) {
             if (!isOpen) {
                 alert('Lo sentimos, estamos cerrados en este momento.');
                 return;
             }
-            console.log('openPizzaSelectionModal:', {itemId, itemName, price, isVegan});
-            currentPizzaSelectionItem = { id: itemId, name: itemName, price: price, isVegan: isVegan };
-            const modal = document.getElementById('pizzaSelectionModal');
-            const overlay = document.getElementById('overlay');
-            
-            if (!modal) {
-                console.error('Pizza selection modal not found');
-                alert('Error: No se pudo abrir el modal de selección de pizza.');
+            currentDependentItem = { id: itemId, name: itemName, price: price, isVegan: isVegan };
+            const modal = document.getElementById('dependentProductModal');
+            const select = document.getElementById('dependentPizzaSelect');
+
+            if (select.options.length <= 1) {
+                alert('No hay pizzas disponibles para seleccionar.');
                 return;
             }
 
-            // Update modal title dynamically
-            const modalTitle = modal.querySelector('h3');
-            modalTitle.textContent = `Selecciona una pizza para tu ${itemName.split(' (')[0]}`; // Remove "(Para tu pizza)" from title
-            
+            document.getElementById('dependentProductTitle').textContent = itemName.split(' (')[0];
             modal.style.display = 'block';
             modal.classList.add('active');
-            overlay.style.display = 'block';
-            overlay.classList.add('active');
+            document.getElementById('overlay').style.display = 'block';
+            document.getElementById('overlay').classList.add('active');
         }
 
-        function closePizzaSelectionModal() {
-            console.log('closePizzaSelectionModal');
-            const modal = document.getElementById('pizzaSelectionModal');
-            const overlay = document.getElementById('overlay');
+        function closeDependentProductModal() {
+            const modal = document.getElementById('dependentProductModal');
             modal.style.display = 'none';
             modal.classList.remove('active');
-            overlay.style.display = 'none';
-            overlay.classList.remove('active');
-            currentPizzaSelectionItem = null;
+            document.getElementById('overlay').style.display = 'none';
+            document.getElementById('overlay').classList.remove('active');
+            currentDependentItem = null;
         }
 
-        function confirmPizzaSelection() {
+        function confirmDependentProduct() {
             if (!isOpen) {
                 alert('Lo sentimos, estamos cerrados en este momento.');
                 return;
             }
-            console.log('confirmPizzaSelection');
-            if (!currentPizzaSelectionItem) {
-                console.error('No current pizza selection item');
-                return;
-            }
-            
-            const pizzaSelect = document.getElementById('pizza-select');
-            if (!pizzaSelect) {
-                console.error('Pizza select not found');
-                alert('Error: No se encontró el selector de pizzas.');
-                return;
-            }
-            
-            const selectedOption = pizzaSelect.options[pizzaSelect.selectedIndex];
-            if (!selectedOption.value) {
+            if (!currentDependentItem) return;
+
+            const select = document.getElementById('dependentPizzaSelect');
+            if (!select.value) {
                 alert('Por favor selecciona una pizza.');
                 return;
             }
-            
+
+            const selectedOption = select.options[select.selectedIndex];
             const pizzaSelection = {
                 id: selectedOption.value,
                 name: selectedOption.dataset.name,
                 price: parseFloat(selectedOption.dataset.price)
             };
-            
+
             addToCart(
-                currentPizzaSelectionItem.name,
-                currentPizzaSelectionItem.price,
-                currentPizzaSelectionItem.id,
-                currentPizzaSelectionItem.isVegan,
+                currentDependentItem.name,
+                currentDependentItem.price,
+                currentDependentItem.id,
+                currentDependentItem.isVegan,
                 [],
                 pizzaSelection
             );
-            closePizzaSelectionModal();
+            closeDependentProductModal();
         }
     </script>
 </div>
