@@ -554,77 +554,7 @@ try {
     <img id="secret-image" class="secret-image" src="https://arrabbiata.com.ar/Uploads/csgif.gif" alt="Carta Secreta" onclick="toggleSecretMode()">
 </a>
 
-    <div class="cart-container" id="cartContainer">
-        <div class="cart-button <?php echo !$is_open ? 'disabled' : ''; ?>" <?php if ($is_open): ?>onclick="toggleCart()"<?php endif; ?>>
-            🛒
-            <div class="cart-badge" id="cartCount">0</div>
-        </div>
-    </div>
-    <div class="overlay" id="overlay" onclick="closeCart()"></div>
-    <div class="cart-modal" id="cartModal">
-        <h3>Tu Pedido</h3>
-        <div class="input-group">
-            <input type="text" id="customerName" placeholder="Nombre para el pedido" required>
-        </div>
-        <div class="input-group">
-            <div class="delivery-toggle">
-                <button type="button" class="delivery-btn active" id="btnRetiro" onclick="setDelivery('retiro')">🏪 Retiro en local</button>
-                <button type="button" class="delivery-btn" id="btnEnvio" onclick="setDelivery('envio')">🛵 Envío a domicilio</button>
-            </div>
-            <div id="addressGroup" style="display:none">
-                <input type="text" id="deliveryAddress" placeholder="Dirección de entrega">
-            </div>
-        </div>
-        <div class="input-group">
-            <textarea id="extraComments" placeholder="Comentarios extra (opcional)" rows="3"></textarea>
-        </div>
-        <div class="input-group">
-            <select id="paymentMethod" required>
-                <option value="">Selecciona forma de pago</option>
-                <option value="Transferencia">Transferencia</option>
-                <option value="Efectivo">Efectivo</option>
-                <option value="Débito">Débito</option>
-                <option value="Crédito">Crédito</option>
-            </select>
-            <div class="credit-warning" id="creditWarning">
-                Pago con crédito tiene un recargo del 10%.
-            </div>
-            <div class="transfer-warning" id="transferWarning">
-                Alias: <b>RRBB.PIZZA</b> <br>Nombre: Gustavo Emilio Muñoz.
-            </div>
-        </div>
-        <div class="cart-items" id="cartItems"></div>
-        <div class="cart-total">
-            Total: $<span id="cartTotal">0</span>
-        </div>
-        <div class="cart-actions">
-            <button class="clear-cart <?php echo !$is_open ? 'disabled' : ''; ?>" <?php if ($is_open): ?>onclick="clearCart()"<?php endif; ?>>Limpiar Carrito</button>
-            <button class="send-order <?php echo !$is_open ? 'disabled' : ''; ?>" <?php if ($is_open): ?>onclick="sendOrder()"<?php endif; ?>>Enviar por WhatsApp</button>
-        </div>
-    </div>
-
-    <div class="subproduct-modal" id="subproductModal">
-        <h3>Selecciona tus pizzas</h3>
-        <div id="subproductSelections"></div>
-        <button onclick="confirmSubproducts()">Agregar al Carrito</button>
-        <button onclick="closeSubproductModal()">Cancelar</button>
-    </div>
-
-    <div class="dependent-product-modal" id="dependentProductModal">
-        <h3>Selecciona una pizza para tu <?php echo htmlspecialchars($item['name'] ?? 'item'); ?></h3>
-        <div id="dependentProductSelection">
-            <select id="dependentPizzaSelect">
-                <option value="">Selecciona una pizza</option>
-                <?php foreach ($eligible_items as $pizza): ?>
-                    <option value="<?php echo $pizza['id']; ?>" data-name="<?php echo htmlspecialchars($pizza['name']); ?>" data-price="<?php echo $pizza['price']; ?>">
-                        <?php echo htmlspecialchars($pizza['name']); ?> ($<?php echo number_format($pizza['price'], 2); ?>)
-                    </option>
-                <?php endforeach; ?>
-            </select>
-        </div>
-        <button onclick="confirmDependentProduct()">Agregar al Carrito</button>
-        <button onclick="closeDependentProductModal()">Cancelar</button>
-    </div>
+    <?php include 'cart_modal.php'; ?>
 
     <footer>
         <div class="footer-content">
@@ -646,6 +576,8 @@ try {
     <script>
         const isOpen = <?php echo json_encode($is_open); ?>;
 
+        let showImageInterval = null;
+
         document.addEventListener('DOMContentLoaded', function() {
             updateCartUI();
             const paymentMethodSelect = document.getElementById('paymentMethod');
@@ -662,9 +594,16 @@ try {
                 applyTop();
                 window.addEventListener('resize', applyTop);
             })();
-        });
 
-        let showImageInterval = null; // mover arriba, scope global
+            // Imagen carta secreta: aparece 5s cada 10s
+            const secretImage = document.getElementById('secret-image');
+            if (secretImage) {
+                showImageInterval = setInterval(function() {
+                    secretImage.classList.add('visible');
+                    setTimeout(function() { secretImage.classList.remove('visible'); }, 5000);
+                }, 10000);
+            }
+        });
 
         function toggleSecretMode() {
             document.body.classList.toggle('secret-mode');
@@ -853,7 +792,6 @@ try {
             }
             const cart = JSON.parse(localStorage.getItem('cart')) || [];
             const customerName = document.getElementById('customerName').value.trim();
-            const extraComments = document.getElementById('extraComments').value.trim();
             const paymentMethod = document.getElementById('paymentMethod').value;
             const address = document.getElementById('deliveryAddress')?.value.trim() || '';
 
@@ -887,11 +825,7 @@ try {
                 total += surcharge;
                 message += `- Recargo TC x1: $${surcharge.toFixed(2)}\n`;
             } else if (paymentMethod === 'Transferencia') {
-                message += `\nDatos para la transferencia: Alias: RRBB.PIZZA, Nombre: Gustavo Emilio Muñoz`;
-            }
-
-            if (extraComments) {
-                message += `\n\n*Comentarios:* ${extraComments}`;
+                message += `\nDatos para la transferencia: Alias: RRBBPIZZA, Nombre: Ezequiel Urquidi`;
             }
 
             message += `\n\n${entrega}\nTotal: $${total.toFixed(2)}\nForma de pago: ${paymentMethod}`;
