@@ -9,7 +9,7 @@
 
 @font-face {
   font-family: 'Alberdini';
-  src: url('dk.woff2') format('woff2'), url('dk.woff') format('woff');
+  src: url('rrbb.woff2') format('woff2'), url('rrbb.woff') format('woff');
   font-weight: normal;
   font-style: normal;
 }
@@ -365,24 +365,22 @@ img { max-width: 100%; height: auto; display: block; }
   font-size: 1.2rem; color: var(--rojo);
 }
 
-/* Etiqueta semanal — badge recto esquina sup-izq de la imagen */
+/* Etiqueta semanal — badge ajustado al texto, esquina sup-izq de la imagen */
 .weekly-special-label {
   position: absolute; top: 7px; left: 7px;
   background: var(--rojo); color: #fff;
   font-family: var(--font-body);
   font-size: .6rem;
   font-weight: 700;
-  padding: 3px 7px;
+  padding: 3px 8px;
   border-radius: 2px;
   letter-spacing: .06em;
   text-transform: uppercase;
   z-index: 3;
   box-shadow: 2px 2px 0 var(--rojo-d);
-  white-space: normal;
-  word-break: break-word;
+  white-space: nowrap;
+  width: fit-content;
   pointer-events: none;
-  max-width: 45%;
-  line-height: 1.2;
 }
 
 
