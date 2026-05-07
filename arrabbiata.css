@@ -215,11 +215,11 @@ img { max-width: 100%; height: auto; display: block; }
 }
 
 /* ===== SECCION CARTA ===== */
-#carta { background: transparent; padding: 12px 20px 72px; }
+#carta { background: transparent; padding: 12px 0 72px; }
 #carta.section { padding-top: 12px !important; }
 
 .menu-container {
-  max-width: 1200px; margin: 0 auto; position: relative;
+  width: 100%; max-width: 100%; margin: 0; position: relative;
   /* Azulejos blancos con grilla roja — como el interior real */
   background: var(--blanco) !important;
   background-image:
@@ -229,7 +229,8 @@ img { max-width: 100%; height: auto; display: block; }
   border-radius: 0;
   border: 5px solid var(--rojo);
   padding: 14px 20px 28px;
-  box-shadow: 8px 8px 0 var(--rojo-d);
+  box-sizing: border-box;
+  box-shadow: none;
 }
 .menu-container h2 {
   text-align: center;
