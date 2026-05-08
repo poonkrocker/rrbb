@@ -47,6 +47,9 @@
         <div class="transfer-warning" id="transferWarning">
             Por favor realiza la transferencia al alias <strong>RRBBPIZZA</strong> a nombre de Ezequiel Urquidi.
         </div>
+        <div class="delivery-payment-notice" id="deliveryPaymentNotice" style="display:none; margin-top:8px; font-size:0.9em; color:#b45309;">
+            Para envíos a domicilio el pago debe ser por <strong>Transferencia</strong>.
+        </div>
     </div>
     <div class="cart-items" id="cartItems"></div>
     <div class="cart-total">
@@ -84,3 +87,86 @@
     <button onclick="confirmDependentProduct()">Agregar al Carrito</button>
     <button onclick="closeDependentProductModal()">Cancelar</button>
 </div>
+
+<script>
+/**
+ * Restricción: si la modalidad de entrega es "Envío a domicilio",
+ * la única forma de pago permitida es "Transferencia".
+ *
+ * Se engancha a los botones de delivery y deja sólo la opción válida
+ * en el <select id="paymentMethod">. Cuando se vuelve a "Retiro en local"
+ * se restauran todas las opciones originales.
+ */
+(function () {
+    function applyEnvioPaymentRestriction() {
+        var select = document.getElementById('paymentMethod');
+        var notice = document.getElementById('deliveryPaymentNotice');
+        if (!select) return;
+
+        // Guardamos las opciones originales una sola vez
+        if (!select.dataset.originalOptions) {
+            var original = [];
+            for (var i = 0; i < select.options.length; i++) {
+                original.push({
+                    value: select.options[i].value,
+                    text: select.options[i].text
+                });
+            }
+            select.dataset.originalOptions = JSON.stringify(original);
+        }
+
+        // Dejamos sólo Transferencia y la seleccionamos
+        select.innerHTML = '';
+        var opt = document.createElement('option');
+        opt.value = 'Transferencia';
+        opt.text = 'Transferencia';
+        opt.selected = true;
+        select.appendChild(opt);
+
+        if (notice) notice.style.display = 'block';
+
+        // Disparamos change para que cualquier listener existente
+        // (por ejemplo el que muestra el aviso de transferencia) reaccione.
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    function restorePaymentOptions() {
+        var select = document.getElementById('paymentMethod');
+        var notice = document.getElementById('deliveryPaymentNotice');
+        if (!select) return;
+
+        if (select.dataset.originalOptions) {
+            var original = JSON.parse(select.dataset.originalOptions);
+            select.innerHTML = '';
+            original.forEach(function (o) {
+                var opt = document.createElement('option');
+                opt.value = o.value;
+                opt.text = o.text;
+                select.appendChild(opt);
+            });
+            // Por defecto, vuelve al placeholder vacío
+            select.value = '';
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+
+        if (notice) notice.style.display = 'none';
+    }
+
+    function init() {
+        var btnEnvio = document.getElementById('btnEnvio');
+        var btnRetiro = document.getElementById('btnRetiro');
+        if (!btnEnvio || !btnRetiro) return;
+
+        // Usamos addEventListener para no pisar el onclick que llama a setDelivery().
+        // Este listener corre después del onclick inline.
+        btnEnvio.addEventListener('click', applyEnvioPaymentRestriction);
+        btnRetiro.addEventListener('click', restorePaymentOptions);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
+})();
+</script>
