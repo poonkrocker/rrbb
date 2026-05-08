@@ -306,6 +306,53 @@ try {
     $categories = [];
 }
 
+// Pre-fetch de ítems por categoría aplicando filtros de día/hora.
+// Se usa la MISMA fuente para el submenú y para la sección, así una
+// categoría sin ítems disponibles ahora (ej. "Promos" fuera de ventana)
+// se oculta consistentemente en ambos lugares.
+$items_by_category = [];
+try {
+    $items_stmt = $pdo->prepare("
+        SELECT mi.*
+        FROM menu_items mi
+        WHERE mi.category_id = ?
+          AND mi.is_visible = 1
+          AND (
+            mi.visible_days IS NULL
+            OR mi.visible_days = '[]'
+            OR JSON_CONTAINS(mi.visible_days, ?)
+          )
+          AND (
+            (mi.visible_start_time IS NULL AND mi.visible_end_time IS NULL)
+            OR (
+              mi.visible_start_time <= mi.visible_end_time
+              AND mi.visible_start_time <= ?
+              AND mi.visible_end_time   >= ?
+            )
+            OR (
+              mi.visible_start_time > mi.visible_end_time
+              AND (
+                mi.visible_start_time <= ?
+                OR  mi.visible_end_time   >= ?
+              )
+            )
+          )
+        ORDER BY mi.display_order
+    ");
+    foreach ($categories as $category) {
+        $items_stmt->execute([
+            $category['id'],
+            json_encode($current_day_es),
+            $current_time, $current_time,  // tramo normal
+            $current_time, $current_time   // cruce de medianoche
+        ]);
+        $items_by_category[$category['id']] = $items_stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+} catch (PDOException $e) {
+    error_log("Error pre-fetching items por categoría: " . $e->getMessage());
+    $items_by_category = [];
+}
+
 
 
 // Fetch sub-products
@@ -625,19 +672,8 @@ $json_flags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRIN
                 <ul>
                     <?php foreach ($categories as $category): ?>
                         <?php
-                        try {
-                            $stmt = $pdo->prepare("
-                                SELECT COUNT(*) as count
-                                FROM menu_items mi
-                                WHERE mi.category_id = ?
-                                AND mi.is_visible = 1
-                            ");
-                            $stmt->execute([$category['id']]);
-                            $item_count = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
-                        } catch (PDOException $e) {
-                            error_log("Error en consulta de conteo de ítems: " . $e->getMessage());
-                            $item_count = 0;
-                        }
+                        // Mismo origen que la sección: si no hay ítems disponibles ahora, no se muestra el link
+                        $item_count = isset($items_by_category[$category['id']]) ? count($items_by_category[$category['id']]) : 0;
                         if ($item_count > 0):
                         ?>
                             <li class="<?php if ($category['name'] == 'Carta Secreta') echo 'secret-link'; ?>">
@@ -654,46 +690,9 @@ $json_flags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRIN
 
             <?php foreach ($categories as $category): ?>
                 <?php
-                try {
-               $stmt = $pdo->prepare("
-    SELECT mi.*
-    FROM menu_items mi
-    WHERE mi.category_id = ?
-      AND mi.is_visible = 1
-      AND (
-        mi.visible_days IS NULL
-        OR mi.visible_days = '[]'
-        OR JSON_CONTAINS(mi.visible_days, ?)
-      )
-      AND (
-        (mi.visible_start_time IS NULL AND mi.visible_end_time IS NULL)
-        OR (
-          mi.visible_start_time <= mi.visible_end_time
-          AND mi.visible_start_time <= ?
-          AND mi.visible_end_time   >= ?
-        )
-        OR (
-          mi.visible_start_time > mi.visible_end_time
-          AND (
-            mi.visible_start_time <= ?
-            OR  mi.visible_end_time   >= ?
-          )
-        )
-      )
-    ORDER BY mi.display_order
-");
-$stmt->execute([
-    $category['id'],
-    json_encode($current_day_es),
-    $current_time, $current_time,  // tramo normal
-    $current_time, $current_time   // cruce de medianoche
-]);
-
-                    $items = $stmt->fetchAll(PDO::FETCH_ASSOC);
-                } catch (PDOException $e) {
-                    error_log("Error en consulta de ítems de menú: " . $e->getMessage());
-                    $items = [];
-                }
+                // Reutilizamos el array pre-calculado: misma fuente que el submenú,
+                // así una categoría sin ítems disponibles ahora se oculta acá también.
+                $items = isset($items_by_category[$category['id']]) ? $items_by_category[$category['id']] : [];
                 if (count($items) > 0):
                 ?>
                     <div id="category-<?php echo $category['id']; ?>" class="category-section <?php if ($category['name'] == 'Carta Secreta') echo 'secret-category'; ?>">
