@@ -786,9 +786,20 @@ $stmt->execute([
                 <p>27 de abril 798, Córdoba</p>
 
                 <h3>Horarios</h3>
-                <p>Lunes a Viernes: 12:00 - 15:00</p>
-                <p>Jueves, Viernes y Sábado: 20:00 - 00:00</p>
-                <p>Domingo: Cerrado</p>
+                <?php
+                if (!empty($all_hours)) {
+                    // Mismo origen que el aviso de cerrado: formatGroupedHours($all_hours)
+                    $horarios_formateados = formatGroupedHours($all_hours);
+                    foreach (explode('<br>', $horarios_formateados) as $linea) {
+                        $linea = trim($linea);
+                        if ($linea !== '') {
+                            echo '<p>' . $linea . '</p>';
+                        }
+                    }
+                } else {
+                    echo '<p>Horarios no configurados, contacta al administrador.</p>';
+                }
+                ?>
 
                 <h3>Contacto</h3>
                 <a href="https://www.instagram.com/arrabbiata.pizza" target="_blank">@arrabbiata.pizza</a>
