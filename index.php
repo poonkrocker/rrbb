@@ -491,7 +491,7 @@ $restaurant_schema = [
     '@id'                => 'https://arrabbiata.com.ar/#restaurant',
     'name'               => 'Arrabbiata',
     'alternateName'      => 'Pizzería Arrabbiata',
-    'description'        => 'Pizzería Arrabbiata, la mejor pizza de Córdoba. Auténticas pizzas estilo napolitano con ingredientes de la provincia, en el corazón de Alberdi.',
+    'description'        => 'Pizzería Arrabbiata, la mejor pizza de Alberdi. Auténticas pizzas estilo napolitano con ingredientes de la provincia, en el corazón del barrio Alberdi, Córdoba Capital.',
     'url'                => 'https://arrabbiata.com.ar',
     'logo'               => 'https://arrabbiata.com.ar/Uploads/logolindo.png',
     'image'              => [
@@ -559,21 +559,21 @@ $json_flags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRIN
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pizzería Arrabbiata - Córdoba</title>
-    <meta name="description" content="Pizzería Arrabbiata, la mejor pizza de Córdoba. Pizzas estilo napolitano con ingredientes locales, en 27 de abril 798, Alberdi. Pedí por WhatsApp.">
+    <title>Pizzería Arrabbiata - Pizza en Alberdi, Córdoba</title>
+    <meta name="description" content="Pizzería Arrabbiata, la mejor pizza de Alberdi. Estilo napolitano con ingredientes locales, en 27 de abril 798, barrio Alberdi, Córdoba Capital. Pedí por WhatsApp.">
     <link rel="canonical" href="https://arrabbiata.com.ar/">
     <!-- Open Graph -->
     <meta property="og:type" content="restaurant.restaurant">
     <meta property="og:locale" content="es_AR">
     <meta property="og:site_name" content="Arrabbiata">
-    <meta property="og:title" content="Pizzería Arrabbiata - Córdoba">
-    <meta property="og:description" content="La mejor pizza de Córdoba, estilo napolitano. 27 de abril 798, Alberdi.">
+    <meta property="og:title" content="Pizzería Arrabbiata - La mejor pizza de Alberdi, Córdoba">
+    <meta property="og:description" content="La mejor pizza de Alberdi. Estilo napolitano, ingredientes locales. 27 de abril 798, Córdoba.">
     <meta property="og:url" content="https://arrabbiata.com.ar/">
     <meta property="og:image" content="https://arrabbiata.com.ar/wp-content/uploads/2025/05/Identidad-Arrabbiata-19_page-0001-1-scaled-e1746087327655.png">
     <!-- Twitter -->
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Pizzería Arrabbiata - Córdoba">
-    <meta name="twitter:description" content="La mejor pizza de Córdoba, estilo napolitano.">
+    <meta name="twitter:title" content="Pizzería Arrabbiata - La mejor pizza de Alberdi, Córdoba">
+    <meta name="twitter:description" content="La mejor pizza de Alberdi, estilo napolitano. En Córdoba Capital.">
     <meta name="twitter:image" content="https://arrabbiata.com.ar/wp-content/uploads/2025/05/Identidad-Arrabbiata-19_page-0001-1-scaled-e1746087327655.png">
 
     <link rel="stylesheet" href="arrabbiata.css">
@@ -637,7 +637,7 @@ $json_flags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRIN
                 <img src="https://arrabbiata.com.ar/Uploads/logolindo.png"
                      alt="Arrabbiata"
                      class="floating-logo">
-                <p>LA MEJOR PIZZA DE CÓRDOBA</p>
+                <p>LA MEJOR PIZZA DE ALBERDI</p>
             </div>
         </section>
 
@@ -655,8 +655,9 @@ $json_flags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRIN
 </div>
 
             <div class="nosotros-text">
+                <h1>La mejor pizza de Alberdi, Córdoba</h1>
                 <h2>Nuestra Historia</h2>
-                <p>Arrabbiata nació en 2022 con una idea clara: hacer pizzas con estilo napolitano jerarquizando los ingredientes de la provincia de Córdoba. Nuestro objetivo es mejorar siempre la propuesta para nuestros clientes, ofreciendo la mejor calidad de la provincia y permitiendonos jugar con los sabores en nuestra "pizza de la semana". Los esperamos de jueves a sabados de 20 a 00 hs para probar las mejores pizzas de la ciudad de Córdoba, y de lunes a viernes de 12 a 15 hs con nuestras pizzas y también nuestros maravillosos panchitos con salchicha alemana ahumada.</p>
+                <p>Arrabbiata nació en 2022 con una idea clara: hacer pizzas con estilo napolitano jerarquizando los ingredientes de la provincia de Córdoba. Nuestro objetivo es mejorar siempre la propuesta para nuestros clientes, ofreciendo la mejor calidad de la provincia y permitiendonos jugar con los sabores en nuestra "pizza de la semana". Los esperamos de jueves a sabados de 20 a 00 hs para probar las mejores pizzas del barrio Alberdi, y de lunes a viernes de 12 a 15 hs con nuestras pizzas y también nuestros maravillosos panchitos con salchicha alemana ahumada. Estamos en el corazón de Alberdi, Córdoba Capital.</p>
             </div>
         </section>
 
@@ -782,7 +783,7 @@ $json_flags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRIN
                     <iframe src="https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d3405.0074799324966!2d-64.197666125057!3d-31.413919996130915!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x943299025f8e592f%3A0xa204fab89226789c!2sArrabbiata%20Pizza%20C%C3%B3rdoba!5e0!3m2!1ses!2sar!4v1747767861650!5m2!1ses!2sar" width="600" height="450" style="border:0;" allowfullscreen="" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
                 </div>
                 <h3>Dirección</h3>
-                <p>27 de abril 798, Córdoba</p>
+                <p>27 de abril 798, barrio Alberdi, Córdoba Capital</p>
 
                 <h3>Horarios</h3>
                 <?php
@@ -811,7 +812,7 @@ $json_flags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRIN
     <!-- Footer -->
     <footer>
         <div class="footer-content">
-            <p>Arrabbiata - La mejor pizza de Córdoba</p>
+            <p>Arrabbiata - La mejor pizza de Alberdi, Córdoba</p>
             <div class="footer-social-icons">
                 <a href="https://www.instagram.com/arrabbiata.pizza" target="_blank">
                     <img src="https://arrabbiata.com.ar/ig50.png" alt="Instagram">
