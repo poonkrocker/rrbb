@@ -642,7 +642,7 @@ $json_flags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRIN
         </section>
 
         <!-- About Section -->
-        <section id="nosotros" class="section">
+        <section id="nosotros" class="section" aria-label="La mejor pizza de Alberdi, Córdoba">
             <div class="gallery-container">
                 <div class="gallery-slide" style="background-image: url('https://arrabbiata.com.ar/Uploads/Img005.webp');"></div>
                 <div class="gallery-slide" style="background-image: url('https://arrabbiata.com.ar/Uploads/Img003.webp');"></div>
@@ -655,7 +655,6 @@ $json_flags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRIN
 </div>
 
             <div class="nosotros-text">
-                <h1>La mejor pizza de Alberdi, Córdoba</h1>
                 <h2>Nuestra Historia</h2>
                 <p>Arrabbiata nació en 2022 con una idea clara: hacer pizzas con estilo napolitano jerarquizando los ingredientes de la provincia de Córdoba. Nuestro objetivo es mejorar siempre la propuesta para nuestros clientes, ofreciendo la mejor calidad de la provincia y permitiendonos jugar con los sabores en nuestra "pizza de la semana". Los esperamos de jueves a sabados de 20 a 00 hs para probar las mejores pizzas del barrio Alberdi, y de lunes a viernes de 12 a 15 hs con nuestras pizzas y también nuestros maravillosos panchitos con salchicha alemana ahumada. Estamos en el corazón de Alberdi, Córdoba Capital.</p>
             </div>
