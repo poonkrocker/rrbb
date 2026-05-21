@@ -559,9 +559,16 @@ $json_flags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRIN
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pizzería Arrabbiata - Pizza en Alberdi, Córdoba</title>
+    <title>Arrabbiata - la mejor Pizza de Alberdi - Córdoba, Argentina</title>
     <meta name="description" content="Pizzería Arrabbiata, la mejor pizza de Alberdi. Estilo napolitano con ingredientes locales, en 27 de abril 798, barrio Alberdi, Córdoba Capital. Pedí por WhatsApp.">
     <link rel="canonical" href="https://arrabbiata.com.ar/">
+    <!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-5JWLLKC7');</script>
+<!-- End Google Tag Manager -->
     <!-- Open Graph -->
     <meta property="og:type" content="restaurant.restaurant">
     <meta property="og:locale" content="es_AR">
@@ -614,6 +621,10 @@ $json_flags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRIN
 </style>
 </head>
 <body>
+    <!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-5JWLLKC7"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
 <div class="container">
 
     <div class="main-container">
