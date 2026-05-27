@@ -576,6 +576,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 echo json_encode(['ok'=>true]);
             } catch (Throwable $e) { $pdo->rollBack(); echo json_encode(['ok'=>false,'error'=>$e->getMessage()]); }
             exit;
+        } elseif ($_POST['action'] === 'reorder_categories') {
+            // AJAX — responde JSON
+            $order = json_decode($_POST['order'] ?? '[]', true);
+            if (!is_array($order) || empty($order)) { echo json_encode(['ok'=>false,'error'=>'Datos inválidos']); exit; }
+            $stmt = $pdo->prepare("UPDATE categories SET display_order = ? WHERE id = ?");
+            $pdo->beginTransaction();
+            try {
+                foreach ($order as $idx => $catId) { $stmt->execute([$idx + 1, (int)$catId]); }
+                $pdo->commit();
+                echo json_encode(['ok'=>true]);
+            } catch (Throwable $e) { $pdo->rollBack(); echo json_encode(['ok'=>false,'error'=>$e->getMessage()]); }
+            exit;
         }
     } catch (Exception $e) {
         $errors[] = "Error: " . $e->getMessage();
@@ -1504,19 +1516,34 @@ $days_of_week = [
                 </div>
                 <div class="category-list">
                     <h3>Categorías Existentes</h3>
+                    <p class="note" style="margin-bottom:10px;">Arrastrá las categorías para reordenarlas, luego confirmá. Para editar el nombre o eliminar, usá los controles de cada fila.</p>
+                    <ul id="category-sortable" style="list-style:none;padding:0;margin:0 0 14px;">
                     <?php foreach ($categories as $category): ?>
-                        <div class="category-item">
-                            <form method="POST" onsubmit="return validateCategoryForm(this)">
+                        <li data-id="<?php echo $category['id']; ?>"
+                            style="display:flex;align-items:center;gap:10px;background:white;border-radius:10px;padding:12px 16px;margin-bottom:8px;box-shadow:0 2px 8px rgba(0,0,0,0.08);cursor:default;">
+                            <span class="cat-drag-handle" title="Arrastrá para reordenar"
+                                style="cursor:grab;color:#aaa;font-size:1.2rem;user-select:none;flex-shrink:0;">⠿</span>
+                            <form method="POST" onsubmit="return validateCategoryForm(this)"
+                                style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;flex:1;">
                                 <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
-                        <input type="hidden" name="action" value="update_category">
+                                <input type="hidden" name="action" value="update_category">
                                 <input type="hidden" name="category_id" value="<?php echo $category['id']; ?>">
-                                <input type="text" name="category_name" value="<?php echo htmlspecialchars($category['name']); ?>" required>
-                                <input type="number" name="category_display_order" value="<?php echo $category['display_order']; ?>" required>
+                                <input type="hidden" name="category_display_order" value="<?php echo $category['display_order']; ?>">
+                                <input type="text" name="category_name"
+                                    value="<?php echo htmlspecialchars($category['name']); ?>"
+                                    required
+                                    style="flex:1;min-width:140px;">
                                 <button type="submit">Actualizar</button>
                                 <button type="submit" name="action" value="delete_category">Eliminar</button>
                             </form>
-                        </div>
+                        </li>
                     <?php endforeach; ?>
+                    </ul>
+                    <button type="button" id="btn-confirm-cat-order"
+                        style="background:#28a745;color:white;border:none;padding:10px 24px;border-radius:8px;font-size:1rem;cursor:pointer;font-weight:600;display:none;">
+                        ✔ Confirmar nuevo orden de categorías
+                    </button>
+                    <span id="cat-order-status" style="margin-left:12px;font-size:0.9rem;"></span>
                 </div>
             </details>
 
@@ -1534,6 +1561,7 @@ $days_of_week = [
                         <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
                         <input type="hidden" name="action" value="bulk_update_prices">
                         <div style="overflow-x:auto;">
+                        <div id="bulk-cat-sortable">
                         <?php
                         // Agrupar items por categoría para mostrarlos agrupados con sus handles de drag
                         $items_by_cat = [];
@@ -1543,15 +1571,18 @@ $days_of_week = [
                         foreach ($categories as $cat):
                             if (empty($items_by_cat[$cat['id']])) continue;
                         ?>
+                        <div class="bulk-cat-block" data-cat-id="<?php echo $cat['id']; ?>" style="margin-bottom:4px;">
                         <p style="font-weight:700;margin:14px 0 4px;font-size:0.95rem;color:#555;border-bottom:1px solid #ddd;padding-bottom:4px;display:flex;align-items:center;gap:10px;">
+                            <span class="bulk-cat-handle" title="Arrastrá para reordenar categorías"
+                                style="cursor:grab;color:#aaa;font-size:1.1rem;user-select:none;flex-shrink:0;">⠿</span>
                             <?php echo htmlspecialchars($cat['name']); ?>
                             <span style="margin-left:auto;display:flex;gap:6px;">
                                 <button type="button"
                                     class="bulk-raise-btn"
                                     data-category="<?php echo $cat['id']; ?>"
-                                    data-amount="500"
-                                    style="background:#28a745;color:white;border:none;border-radius:20px;padding:3px 12px;font-size:0.8rem;cursor:pointer;font-weight:600;">
-                                    +$500
+                                    data-amount="-1000"
+                                    style="background:#e65c00;color:white;border:none;border-radius:20px;padding:3px 12px;font-size:0.8rem;cursor:pointer;font-weight:600;">
+                                    -$1000
                                 </button>
                                 <button type="button"
                                     class="bulk-raise-btn"
@@ -1612,7 +1643,9 @@ $days_of_week = [
                                 <?php endforeach; ?>
                             </tbody>
                         </table>
+                        </div><!-- .bulk-cat-block -->
                         <?php endforeach; ?>
+                        </div><!-- #bulk-cat-sortable -->
                         </div>
                         <button type="submit" style="margin-top:16px;background:#cc0000;color:white;padding:10px 28px;border:none;border-radius:8px;font-size:1rem;cursor:pointer;">
                             Guardar todos los precios
@@ -1621,20 +1654,47 @@ $days_of_week = [
                 </div>
             </details>
             <script>
-            // ── Botones +$500 / +$1000 por categoría ────────────────────────────────
+            // ── Botones -$1000 / +$1000 por categoría ────────────────────────────────
             document.querySelectorAll('.bulk-raise-btn').forEach(function(btn) {
                 btn.addEventListener('click', function() {
                     var catId  = btn.dataset.category;
                     var amount = parseFloat(btn.dataset.amount);
-                    // Seleccionar todos los inputs de precio de esta categoría
                     var tbody = document.querySelector('.bulk-sortable[data-category="' + catId + '"]');
                     if (!tbody) return;
                     tbody.querySelectorAll('input[name^="prices["]').forEach(function(input) {
                         var current = parseFloat(input.value) || 0;
-                        input.value = (current + amount).toFixed(2);
+                        var result  = current + amount;
+                        input.value = (result < 0.01 ? 0.01 : result).toFixed(2);
                     });
                 });
             });
+
+            // ── Drag & drop para reordenar CATEGORÍAS en el bulk editor ─────────────
+            (function() {
+                var bulkCatContainer = document.getElementById('bulk-cat-sortable');
+                if (!bulkCatContainer) return;
+                var csrf = document.querySelector('#bulk-price-form input[name="csrf_token"]').value;
+                Sortable.create(bulkCatContainer, {
+                    handle: '.bulk-cat-handle',
+                    animation: 150,
+                    ghostClass: 'sortable-ghost',
+                    onEnd: async function() {
+                        var blocks = Array.from(bulkCatContainer.querySelectorAll('.bulk-cat-block[data-cat-id]'));
+                        var order  = blocks.map(function(b) { return b.dataset.catId; });
+                        var fd = new FormData();
+                        fd.append('action',     'reorder_categories');
+                        fd.append('order',      JSON.stringify(order));
+                        fd.append('csrf_token', csrf);
+                        try {
+                            var res  = await fetch('editor.php', { method:'POST', body: fd });
+                            var data = await res.json();
+                            if (!data.ok) alert('Error al guardar orden de categorías: ' + (data.error || ''));
+                        } catch(e) {
+                            alert('Error de conexión al guardar el orden de categorías.');
+                        }
+                    }
+                });
+            })();
 
             // ── Botón ✕ de eliminar (bulk) ───────────────────────────────────────────
             document.querySelectorAll('.bulk-delete-btn').forEach(function(btn) {
@@ -2065,6 +2125,55 @@ $days_of_week = [
             }
             return true;
         }
+
+        // ── Drag & drop para reordenar categorías en "Administrar Categorías" ──────
+        (function() {
+            var catList = document.getElementById('category-sortable');
+            var btnConfirm = document.getElementById('btn-confirm-cat-order');
+            var statusSpan = document.getElementById('cat-order-status');
+            if (!catList || !btnConfirm) return;
+
+            Sortable.create(catList, {
+                handle: '.cat-drag-handle',
+                animation: 150,
+                ghostClass: 'sortable-ghost',
+                onEnd: function() {
+                    // Mostrar botón confirmar cuando se arrastra algo
+                    btnConfirm.style.display = 'inline-block';
+                    statusSpan.textContent = '';
+                }
+            });
+
+            btnConfirm.addEventListener('click', async function() {
+                var items = Array.from(catList.querySelectorAll('li[data-id]'));
+                var order = items.map(function(li) { return li.dataset.id; });
+                var csrf  = document.querySelector('input[name="csrf_token"]').value;
+                btnConfirm.disabled = true;
+                btnConfirm.textContent = 'Guardando…';
+                var fd = new FormData();
+                fd.append('action',     'reorder_categories');
+                fd.append('order',      JSON.stringify(order));
+                fd.append('csrf_token', csrf);
+                try {
+                    var res  = await fetch('editor.php', { method:'POST', body: fd });
+                    var data = await res.json();
+                    if (data.ok) {
+                        btnConfirm.style.display = 'none';
+                        statusSpan.style.color = '#28a745';
+                        statusSpan.textContent = '✔ Orden guardado correctamente';
+                        setTimeout(function() { statusSpan.textContent = ''; }, 3000);
+                    } else {
+                        statusSpan.style.color = '#cc0000';
+                        statusSpan.textContent = 'Error: ' + (data.error || 'desconocido');
+                    }
+                } catch(e) {
+                    statusSpan.style.color = '#cc0000';
+                    statusSpan.textContent = 'Error de conexión.';
+                }
+                btnConfirm.disabled = false;
+                btnConfirm.textContent = '✔ Confirmar nuevo orden de categorías';
+            });
+        })();
 
         // Drag and Drop with SortableJS
         const itemGrid = document.getElementById('item-grid');
