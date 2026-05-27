@@ -2,6 +2,15 @@
 session_start();
 require_once 'db_connect.php';
 
+// ── Carpeta de uploads compartida entre producción y git ──────────────────────
+// UPLOAD_DIR: ruta física absoluta donde se guardan las imágenes.
+//             Debe ser la misma para ambas instalaciones.
+// UPLOAD_URL: URL pública absoluta con la que se accede a esas imágenes.
+//             Siempre desde la raíz del dominio, sin importar desde qué
+//             instalación se sube.
+define('UPLOAD_DIR', $_SERVER['DOCUMENT_ROOT'] . '/Uploads/');
+define('UPLOAD_URL', '/Uploads/');
+
 if (!isset($_SESSION['admin_id'])) {
     header('Location: login.php');
     exit;
@@ -167,11 +176,15 @@ function uploadImageSecure(array $file, string $target_dir): string {
         throw new Exception("Tipo de archivo no permitido. Solo se aceptan imágenes (JPG, PNG, WEBP, GIF).");
     }
 
+    // Usar siempre la carpeta compartida, ignorar $target_dir
+    $save_dir = defined('UPLOAD_DIR') ? UPLOAD_DIR : $target_dir;
+    $pub_dir  = defined('UPLOAD_URL') ? UPLOAD_URL : $target_dir;
+
     // Nombre de salida siempre .webp
     $image_name = uniqid('img_', true) . '.webp';
 
-    if (!file_exists($target_dir)) {
-        mkdir($target_dir, 0755, true);
+    if (!file_exists($save_dir)) {
+        mkdir($save_dir, 0755, true);
     }
 
     // Crear recurso GD según el MIME de origen
@@ -208,7 +221,7 @@ function uploadImageSecure(array $file, string $target_dir): string {
 
     imagecopyresampled($dst, $src, $offset_x, $offset_y, 0, 0, $scaled_w, $scaled_h, $orig_w, $orig_h);
 
-    $dest = $target_dir . $image_name;
+    $dest = $save_dir . $image_name;
 
     // Guardar como WebP calidad 80
     if (!imagewebp($dst, $dest, 80)) {
@@ -218,7 +231,8 @@ function uploadImageSecure(array $file, string $target_dir): string {
     imagedestroy($src);
     imagedestroy($dst);
 
-    return $dest;
+    // Devolver URL pública absoluta (accesible desde cualquier instalación)
+    return $pub_dir . $image_name;
 }
 
 // ---- Upload desde datos base64 (imagen recortada en el cliente) ----
