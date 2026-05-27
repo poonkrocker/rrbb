@@ -150,10 +150,9 @@ if (isset($_POST['action']) && in_array($_POST['action'], ['add_business_hours',
 }
 /* ==== HOURS_PATCH_24PLUS_END ==== */
 
-// ---- Upload seguro de imágenes ----
+// ---- Upload seguro de imágenes con procesamiento a 800×800 WebP ----
 function uploadImageSecure(array $file, string $target_dir): string {
     $allowed_mime = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
-    $allowed_ext  = ['jpg', 'jpeg', 'png', 'webp', 'gif'];
 
     // Verificar errores de upload
     if ($file['error'] !== UPLOAD_ERR_OK) {
@@ -168,22 +167,88 @@ function uploadImageSecure(array $file, string $target_dir): string {
         throw new Exception("Tipo de archivo no permitido. Solo se aceptan imágenes (JPG, PNG, WEBP, GIF).");
     }
 
-    // Obtener extensión real desde el MIME (ignorar la del nombre original)
-    $ext_map = ['image/jpeg'=>'jpg','image/png'=>'png','image/webp'=>'webp','image/gif'=>'gif'];
-    $ext = $ext_map[$mime];
-
-    // Nombre completamente generado — sin datos del cliente
-    $image_name = uniqid('img_', true) . '.' . $ext;
+    // Nombre de salida siempre .webp
+    $image_name = uniqid('img_', true) . '.webp';
 
     if (!file_exists($target_dir)) {
         mkdir($target_dir, 0755, true);
     }
 
-    $dest = $target_dir . $image_name;
-    if (!move_uploaded_file($file['tmp_name'], $dest)) {
-        throw new Exception("Error al guardar la imagen en el servidor.");
+    // Crear recurso GD según el MIME de origen
+    switch ($mime) {
+        case 'image/jpeg': $src = imagecreatefromjpeg($file['tmp_name']); break;
+        case 'image/png':  $src = imagecreatefrompng($file['tmp_name']);  break;
+        case 'image/webp': $src = imagecreatefromwebp($file['tmp_name']); break;
+        case 'image/gif':  $src = imagecreatefromgif($file['tmp_name']);  break;
+        default: throw new Exception("No se pudo procesar la imagen.");
     }
+    if (!$src) {
+        throw new Exception("No se pudo leer la imagen subida.");
+    }
+
+    $orig_w = imagesx($src);
+    $orig_h = imagesy($src);
+
+    // Destino cuadrado 800×800
+    $out_size = 800;
+    $dst = imagecreatetruecolor($out_size, $out_size);
+
+    // Preservar transparencia para PNG/WebP/GIF
+    imagealphablending($dst, false);
+    imagesavealpha($dst, true);
+    $transparent = imagecolorallocatealpha($dst, 0, 0, 0, 127);
+    imagefill($dst, 0, 0, $transparent);
+
+    // Escalar manteniendo relación de aspecto y centrar (letterbox/pillarbox)
+    $scale = min($out_size / $orig_w, $out_size / $orig_h);
+    $scaled_w = (int)round($orig_w * $scale);
+    $scaled_h = (int)round($orig_h * $scale);
+    $offset_x = (int)(($out_size - $scaled_w) / 2);
+    $offset_y = (int)(($out_size - $scaled_h) / 2);
+
+    imagecopyresampled($dst, $src, $offset_x, $offset_y, 0, 0, $scaled_w, $scaled_h, $orig_w, $orig_h);
+
+    $dest = $target_dir . $image_name;
+
+    // Guardar como WebP calidad 80
+    if (!imagewebp($dst, $dest, 80)) {
+        throw new Exception("Error al guardar la imagen procesada en el servidor.");
+    }
+
+    imagedestroy($src);
+    imagedestroy($dst);
+
     return $dest;
+}
+
+// ---- Upload desde datos base64 (imagen recortada en el cliente) ----
+function uploadImageFromBase64(string $base64data, string $target_dir): string {
+    // Espera formato: data:image/TYPE;base64,XXXXX
+    if (!preg_match('/^data:(image\/(?:jpeg|png|webp|gif));base64,(.+)$/s', $base64data, $m)) {
+        throw new Exception("Formato de imagen recortada inválido.");
+    }
+    $mime = $m[1];
+    $raw  = base64_decode($m[2], true);
+    if ($raw === false || strlen($raw) < 100) {
+        throw new Exception("Datos de imagen recortada corruptos.");
+    }
+
+    // Guardar temporalmente para reusar uploadImageSecure con GD
+    $tmp = tempnam(sys_get_temp_dir(), 'crop_');
+    file_put_contents($tmp, $raw);
+
+    // Usar GD directamente (misma lógica que uploadImageSecure)
+    $allowed_mime = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+    if (!in_array($mime, $allowed_mime, true)) {
+        unlink($tmp);
+        throw new Exception("Tipo MIME de imagen recortada no permitido.");
+    }
+
+    $fake_file = ['error' => UPLOAD_ERR_OK, 'tmp_name' => $tmp];
+    // Parche: mover al lugar correcto temporalmente para que finfo funcione
+    $result = uploadImageSecure($fake_file, $target_dir);
+    unlink($tmp);
+    return $result;
 }
 
 // ---- Token CSRF ----
@@ -232,7 +297,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             }
 
             $image_url = '';
-            if (!empty($_POST['image_url'])) {
+            if (!empty($_POST['cropped_image_data'])) {
+                // Imagen recortada desde el cliente (base64)
+                $image_url = uploadImageFromBase64($_POST['cropped_image_data'], "Uploads/");
+            } elseif (!empty($_POST['image_url'])) {
                 $image_url = filter_var($_POST['image_url'], FILTER_SANITIZE_URL);
                 if (!filter_var($image_url, FILTER_VALIDATE_URL)) {
                     throw new Exception("La URL de la imagen no es válida.");
@@ -304,7 +372,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             }
 
             $image_url = $_POST['existing_image'];
-            if (!empty($_POST['image_url'])) {
+            if (!empty($_POST['cropped_image_data'])) {
+                // Imagen recortada desde el cliente (base64)
+                $image_url = uploadImageFromBase64($_POST['cropped_image_data'], "Uploads/");
+            } elseif (!empty($_POST['image_url'])) {
                 $candidate = filter_var($_POST['image_url'], FILTER_SANITIZE_URL);
                 // Solo procesar como URL externa si empieza con http(s)
                 if (!preg_match('/^https?:\/\//i', $candidate)) {
@@ -557,6 +628,73 @@ $days_of_week = [
     <title>Editor de Menú - Pizzería Arrabbiata</title>
     <link rel="icon" type="image/png" href="/favicon.png"/>
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cropperjs@1.6.2/dist/cropper.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/cropperjs@1.6.2/dist/cropper.min.js"></script>
+    <style>
+        /* ── Modal de recorte ── */
+        #crop-modal {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.75);
+            z-index: 2000;
+            justify-content: center;
+            align-items: center;
+        }
+        #crop-modal.open { display: flex; }
+        #crop-modal-inner {
+            background: #fff;
+            border-radius: 12px;
+            padding: 20px;
+            max-width: 520px;
+            width: 94%;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+        #crop-modal-inner h4 {
+            margin: 0;
+            font-family: 'Alberdi', cursive;
+            font-size: 1.3rem;
+            color: #333;
+        }
+        #crop-container {
+            width: 100%;
+            max-height: 380px;
+            overflow: hidden;
+            background: #111;
+            border-radius: 8px;
+        }
+        #crop-container img {
+            display: block;
+            max-width: 100%;
+        }
+        #crop-modal-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+        }
+        #crop-modal-actions button {
+            padding: 9px 22px;
+            border-radius: 25px;
+            border: none;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 0.95rem;
+        }
+        #btn-crop-confirm { background: #cc0000; color: #fff; }
+        #btn-crop-cancel  { background: #ddd; color: #333; }
+        #btn-crop-confirm:hover { background: #b30000; }
+        #btn-crop-cancel:hover  { background: #bbb; }
+        .crop-preview-thumb {
+            width: 60px; height: 60px;
+            object-fit: cover;
+            border-radius: 6px;
+            border: 2px solid #cc0000;
+            display: inline-block;
+            vertical-align: middle;
+            margin-left: 8px;
+        }
     <style>
         @font-face {
             font-family: 'Alberdi';
@@ -1391,8 +1529,24 @@ $days_of_week = [
                         foreach ($categories as $cat):
                             if (empty($items_by_cat[$cat['id']])) continue;
                         ?>
-                        <p style="font-weight:700;margin:14px 0 4px;font-size:0.95rem;color:#555;border-bottom:1px solid #ddd;padding-bottom:4px;">
+                        <p style="font-weight:700;margin:14px 0 4px;font-size:0.95rem;color:#555;border-bottom:1px solid #ddd;padding-bottom:4px;display:flex;align-items:center;gap:10px;">
                             <?php echo htmlspecialchars($cat['name']); ?>
+                            <span style="margin-left:auto;display:flex;gap:6px;">
+                                <button type="button"
+                                    class="bulk-raise-btn"
+                                    data-category="<?php echo $cat['id']; ?>"
+                                    data-amount="500"
+                                    style="background:#28a745;color:white;border:none;border-radius:20px;padding:3px 12px;font-size:0.8rem;cursor:pointer;font-weight:600;">
+                                    +$500
+                                </button>
+                                <button type="button"
+                                    class="bulk-raise-btn"
+                                    data-category="<?php echo $cat['id']; ?>"
+                                    data-amount="1000"
+                                    style="background:#007bff;color:white;border:none;border-radius:20px;padding:3px 12px;font-size:0.8rem;cursor:pointer;font-weight:600;">
+                                    +$1000
+                                </button>
+                            </span>
                         </p>
                         <table class="hours-table" style="width:100%;min-width:500px;margin-bottom:8px;">
                             <thead>
@@ -1453,6 +1607,21 @@ $days_of_week = [
                 </div>
             </details>
             <script>
+            // ── Botones +$500 / +$1000 por categoría ────────────────────────────────
+            document.querySelectorAll('.bulk-raise-btn').forEach(function(btn) {
+                btn.addEventListener('click', function() {
+                    var catId  = btn.dataset.category;
+                    var amount = parseFloat(btn.dataset.amount);
+                    // Seleccionar todos los inputs de precio de esta categoría
+                    var tbody = document.querySelector('.bulk-sortable[data-category="' + catId + '"]');
+                    if (!tbody) return;
+                    tbody.querySelectorAll('input[name^="prices["]').forEach(function(input) {
+                        var current = parseFloat(input.value) || 0;
+                        input.value = (current + amount).toFixed(2);
+                    });
+                });
+            });
+
             // ── Botón ✕ de eliminar (bulk) ───────────────────────────────────────────
             document.querySelectorAll('.bulk-delete-btn').forEach(function(btn) {
                 btn.addEventListener('click', function() {
@@ -1542,7 +1711,9 @@ $days_of_week = [
                         </select>
                         <textarea name="description" placeholder="Descripción"></textarea>
                         <label>Imagen (Subir archivo)</label>
-                        <input type="file" name="image" accept="image/*">
+                        <input type="file" name="image" accept="image/*" class="crop-file-input">
+                        <input type="hidden" name="cropped_image_data" class="cropped-data-field">
+                        <div class="crop-preview-wrap" style="margin:4px 0 8px;min-height:0;"></div>
                         <label>Imagen (URL)</label>
                         <input type="url" name="image_url" placeholder="https://example.com/image.jpg">
                         <div class="toggle-group">
@@ -1653,6 +1824,20 @@ $days_of_week = [
             </div>
         </div>
     </section>
+
+    <!-- ── Modal de recorte de imagen ── -->
+    <div id="crop-modal">
+        <div id="crop-modal-inner">
+            <h4>Recortar imagen (cuadrado 1:1)</h4>
+            <div id="crop-container">
+                <img id="crop-image" src="" alt="Recortar">
+            </div>
+            <div id="crop-modal-actions">
+                <button id="btn-crop-cancel" type="button">Cancelar</button>
+                <button id="btn-crop-confirm" type="button">✔ Usar imagen recortada</button>
+            </div>
+        </div>
+    </div>
 
     <script>
         // Image Preview for File Upload
@@ -1921,7 +2106,9 @@ $days_of_week = [
                         </select>
                         <textarea name="description">${item.description || ''}</textarea>
                         <label>Imagen (Subir archivo)</label>
-                        <input type="file" name="image" accept="image/*">
+                        <input type="file" name="image" accept="image/*" class="crop-file-input">
+                        <input type="hidden" name="cropped_image_data" class="cropped-data-field">
+                        <div class="crop-preview-wrap" style="margin:4px 0 8px;min-height:0;"></div>
                         <label>Imagen (URL)</label>
                         <input type="url" name="image_url" value="${/^https?:\/\//i.test(item.image_url || '') ? item.image_url : ''}" placeholder="https://example.com/image.jpg">
                         <div class="toggle-group">
@@ -2075,6 +2262,140 @@ $days_of_week = [
                 closeModal();
             }
         });
+    </script>
+    <script>
+    // ══════════════════════════════════════════════════════════════════════
+    // Cropper.js — lógica global para recorte de imágenes 1:1
+    // Funciona tanto para el formulario de "Agregar" como para el modal de edición
+    // ══════════════════════════════════════════════════════════════════════
+    (function() {
+        var cropModal   = document.getElementById('crop-modal');
+        var cropImg     = document.getElementById('crop-image');
+        var btnConfirm  = document.getElementById('btn-crop-confirm');
+        var btnCancel   = document.getElementById('btn-crop-cancel');
+        var cropper     = null;
+
+        // Input de archivo activo y form al que pertenece
+        var activeFileInput  = null;
+        var activeCroppedField = null;
+        var activePreviewWrap  = null;
+
+        function openCropModal(fileInput, blob) {
+            activeFileInput    = fileInput;
+            // Buscar los campos hidden y preview dentro del mismo form/container
+            var container = fileInput.closest('form') || fileInput.parentNode;
+            activeCroppedField = container.querySelector('.cropped-data-field');
+            activePreviewWrap  = container.querySelector('.crop-preview-wrap');
+
+            var url = URL.createObjectURL(blob);
+            cropImg.src = url;
+            cropModal.classList.add('open');
+
+            // Destruir cropper anterior si existe
+            if (cropper) { cropper.destroy(); cropper = null; }
+
+            cropImg.onload = function() {
+                cropper = new Cropper(cropImg, {
+                    aspectRatio: 1,
+                    viewMode: 1,
+                    dragMode: 'move',
+                    autoCropArea: 0.9,
+                    responsive: true,
+                    restore: false,
+                    guides: true,
+                    center: true,
+                    highlight: false,
+                    cropBoxMovable: true,
+                    cropBoxResizable: true,
+                    toggleDragModeOnDblclick: false,
+                });
+            };
+        }
+
+        function closeCropModal() {
+            cropModal.classList.remove('open');
+            if (cropper) { cropper.destroy(); cropper = null; }
+            cropImg.src = '';
+        }
+
+        // Escuchar cualquier input[type=file] con clase crop-file-input
+        // (incluyendo los que se inyectan dinámicamente en el modal de edición)
+        document.body.addEventListener('change', function(e) {
+            var input = e.target;
+            if (!input.classList.contains('crop-file-input')) return;
+            if (!input.files || !input.files[0]) return;
+            var file = input.files[0];
+            if (!file.type.startsWith('image/')) return;
+            openCropModal(input, file);
+        });
+
+        btnConfirm.addEventListener('click', function() {
+            if (!cropper || !activeCroppedField) return;
+            var canvas = cropper.getCroppedCanvas({ width: 800, height: 800, imageSmoothingQuality: 'high' });
+            var dataUrl = canvas.toDataURL('image/webp', 0.8);
+
+            // Guardar en el campo hidden
+            activeCroppedField.value = dataUrl;
+
+            // Deshabilitar el input file para que el PHP no lo procese también
+            if (activeFileInput) activeFileInput.disabled = true;
+
+            // Mostrar miniatura de preview
+            if (activePreviewWrap) {
+                activePreviewWrap.innerHTML = '';
+                var thumb = document.createElement('img');
+                thumb.src = dataUrl;
+                thumb.className = 'crop-preview-thumb';
+                thumb.title = 'Imagen recortada — lista para subir';
+                var label = document.createElement('span');
+                label.textContent = ' Imagen recortada ✔';
+                label.style.cssText = 'font-size:0.85rem;color:#28a745;font-weight:600;';
+                activePreviewWrap.appendChild(thumb);
+                activePreviewWrap.appendChild(label);
+                // Botón para re-recortar
+                var reBtn = document.createElement('button');
+                reBtn.type = 'button';
+                reBtn.textContent = 'Cambiar recorte';
+                reBtn.style.cssText = 'margin-left:10px;background:none;border:1px solid #cc0000;color:#cc0000;border-radius:12px;padding:2px 10px;font-size:0.8rem;cursor:pointer;';
+                reBtn.addEventListener('click', function() {
+                    activeCroppedField = activePreviewWrap.closest('form').querySelector('.cropped-data-field');
+                    var fi = activePreviewWrap.closest('form').querySelector('.crop-file-input');
+                    if (fi && fi.files && fi.files[0]) {
+                        fi.disabled = false;
+                        openCropModal(fi, fi.files[0]);
+                    }
+                });
+                activePreviewWrap.appendChild(reBtn);
+            }
+
+            closeCropModal();
+        });
+
+        btnCancel.addEventListener('click', function() {
+            // Limpiar el input file al cancelar
+            if (activeFileInput) {
+                activeFileInput.value = '';
+                activeFileInput.disabled = false;
+            }
+            if (activeCroppedField) activeCroppedField.value = '';
+            if (activePreviewWrap) activePreviewWrap.innerHTML = '';
+            closeCropModal();
+        });
+
+        // Cerrar al click fuera
+        cropModal.addEventListener('click', function(e) {
+            if (e.target === cropModal) btnCancel.click();
+        });
+
+        // Esc
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape' && cropModal.classList.contains('open')) btnCancel.click();
+        });
+
+        // Cuando el modal de edición de producto se abre (openModal), los inputs
+        // dinámicos ya tendrán la clase crop-file-input por el template literal,
+        // así que el listener delegado en document.body los captura automáticamente.
+    })();
     </script>
 </body>
 </html>
