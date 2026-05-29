@@ -307,78 +307,107 @@ try {
 }
 
 // Pre-fetch de ítems por categoría aplicando filtros de día/hora.
+function itemIsVisibleNow($item, $current_day_es, $current_day_key, $current_time) {
+
+    // NUEVO FORMATO
+    if (!empty($item['visible_schedules'])) {
+
+        $schedules = json_decode($item['visible_schedules'], true);
+
+        if (is_array($schedules) && count($schedules) > 0) {
+
+            foreach ($schedules as $schedule) {
+
+                if (
+                    empty($schedule['days']) ||
+                    !in_array($current_day_key, $schedule['days'])
+                ) {
+                    continue;
+                }
+
+                $start = $schedule['start'] ?? '';
+                $end   = $schedule['end'] ?? '';
+
+                if (!$start || !$end) {
+                    return true;
+                }
+
+                // horario normal
+                if ($start <= $end) {
+                    if ($current_time >= $start && $current_time <= $end) {
+                        return true;
+                    }
+                }
+
+                // cruce medianoche
+                else {
+                    if (
+                        $current_time >= $start ||
+                        $current_time <= $end
+                    ) {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+    }
+
+    // FORMATO VIEJO
+    if (
+        empty($item['visible_days']) ||
+        $item['visible_days'] === '[]'
+    ) {
+        return true;
+    }
+
+    $days = json_decode($item['visible_days'], true);
+
+    if (!is_array($days)) {
+        return true;
+    }
+
+    return in_array($current_day_es, $days);
+}
+
 $items_by_category = [];
 
 try {
+
     $items_stmt = $pdo->prepare("
-        SELECT DISTINCT mi.*
-        FROM menu_items mi
-
-        LEFT JOIN JSON_TABLE(
-            mi.visible_schedules,
-            '$[*]'
-            COLUMNS (
-                days JSON PATH '$.days',
-                start_time VARCHAR(5) PATH '$.start',
-                end_time VARCHAR(5) PATH '$.end'
-            )
-        ) sch ON 1=1
-
-        WHERE mi.category_id = ?
-          AND mi.is_visible = 1
-
-          AND (
-                mi.visible_schedules IS NULL
-                OR mi.visible_schedules = ''
-                OR mi.visible_schedules = '[]'
-
-                OR (
-                    JSON_CONTAINS(sch.days, JSON_QUOTE(?))
-
-                    AND (
-                        (sch.start_time <= sch.end_time
-                            AND sch.start_time <= ?
-                            AND sch.end_time >= ?)
-
-                        OR
-
-                        (sch.start_time > sch.end_time
-                            AND (
-                                sch.start_time <= ?
-                                OR sch.end_time >= ?
-                            ))
-                    )
-                )
-
-                OR (
-                    mi.visible_days IS NOT NULL
-                    AND mi.visible_days != '[]'
-                    AND JSON_CONTAINS(mi.visible_days, ?)
-                )
-          )
-
-        ORDER BY mi.display_order
+        SELECT *
+        FROM menu_items
+        WHERE category_id = ?
+        AND is_visible = 1
+        ORDER BY display_order
     ");
 
     foreach ($categories as $category) {
-        $items_stmt->execute([
-            $category['id'],
-            $current_day_key,
-            $current_time,
-            $current_time,
-            $current_time,
-            $current_time,
-            json_encode($current_day_es)
-        ]);
 
-        $items_by_category[$category['id']] = $items_stmt->fetchAll(PDO::FETCH_ASSOC);
+        $items_stmt->execute([$category['id']]);
+
+        $raw_items = $items_stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $items_by_category[$category['id']] = array_values(array_filter(
+            $raw_items,
+            function($item) use ($current_day_es, $current_day_key, $current_time) {
+                return itemIsVisibleNow(
+                    $item,
+                    $current_day_es,
+                    $current_day_key,
+                    $current_time
+                );
+            }
+        ));
     }
 
 } catch (PDOException $e) {
+
     error_log("Error pre-fetching items por categoría: " . $e->getMessage());
+
     $items_by_category = [];
 }
-
 
 // Fetch sub-products
 $sub_products = [];
@@ -405,83 +434,44 @@ try {
 $eligible_items = [];
 
 try {
+
     $stmt = $pdo->prepare("
-        SELECT DISTINCT mi.id, mi.name, mi.price
-        FROM menu_items mi
-
-        LEFT JOIN JSON_TABLE(
-            mi.visible_schedules,
-            '$[*]'
-            COLUMNS (
-                days JSON PATH '$.days',
-                start_time VARCHAR(5) PATH '$.start',
-                end_time VARCHAR(5) PATH '$.end'
-            )
-        ) sch ON 1=1
-
-        WHERE mi.is_visible = 1
-
-        AND mi.category_id = (
+        SELECT id, name, price, visible_days, visible_schedules
+        FROM menu_items
+        WHERE is_visible = 1
+        AND category_id = (
             SELECT id
             FROM categories
             WHERE name = 'Pizzas'
             LIMIT 1
         )
-
-        AND (
-            mi.visible_schedules IS NULL
-            OR mi.visible_schedules = ''
-            OR mi.visible_schedules = '[]'
-
-            OR (
-                JSON_CONTAINS(sch.days, JSON_QUOTE(?))
-
-                AND (
-                    (
-                        sch.start_time <= sch.end_time
-                        AND sch.start_time <= ?
-                        AND sch.end_time >= ?
-                    )
-
-                    OR
-
-                    (
-                        sch.start_time > sch.end_time
-                        AND (
-                            sch.start_time <= ?
-                            OR sch.end_time >= ?
-                        )
-                    )
-                )
-            )
-
-            OR (
-                mi.visible_days IS NOT NULL
-                AND mi.visible_days != '[]'
-                AND JSON_CONTAINS(mi.visible_days, ?)
-            )
-        )
-
-        ORDER BY mi.name
+        ORDER BY name
     ");
 
-    $stmt->execute([
-        $current_day_key,
-        $current_time,
-        $current_time,
-        $current_time,
-        $current_time,
-        json_encode($current_day_es)
-    ]);
+    $stmt->execute();
 
-    $eligible_items = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $raw_items = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    $eligible_items = array_values(array_filter(
+        $raw_items,
+        function($item) use ($current_day_es, $current_day_key, $current_time) {
+            return itemIsVisibleNow(
+                $item,
+                $current_day_es,
+                $current_day_key,
+                $current_time
+            );
+        }
+    ));
 
 } catch (PDOException $e) {
+
     error_log("Error eligible_items: " . $e->getMessage());
+
     $eligible_items = [];
 }
 
-
+// ===========================================================
 // ===========================================================
 // Construcción del Schema.org (JSON-LD) - DINÁMICO
 // ===========================================================
