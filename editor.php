@@ -984,7 +984,35 @@ $days_of_week = [
             border: 2px solid transparent;
         }
 
-        .day-toggle.active,
+        
+        .schedule-row{
+            border:1px solid #ddd;
+            border-radius:12px;
+            padding:12px;
+            margin:10px 0;
+            display:flex;
+            flex-direction:column;
+            gap:10px;
+        }
+        .schedule-days{
+            display:flex;
+            flex-wrap:wrap;
+            gap:8px;
+        }
+        .schedule-days label{
+            font-size:14px;
+            display:flex;
+            align-items:center;
+            gap:4px;
+            margin:0;
+        }
+        .btn-add-schedule{
+            padding:10px 14px;
+            border-radius:10px;
+            border:none;
+            cursor:pointer;
+        }
+.day-toggle.active,
         .option-toggle.active {
             background-color: #cc0000;
             color: white;
@@ -1854,24 +1882,12 @@ $days_of_week = [
                         <div id="weekly_special_text_container" style="display: none;">
                             <input type="text" name="weekly_special_text" class="weekly-special-text" placeholder="Texto Destacado" value="¡Pizza de la semana!">
                         </div>
-                        <div class="time-inputs">
-                            <input type="time" name="visible_start_time" placeholder="Hora de Inicio (opcional)">
-                            <input type="time" name="visible_end_time" placeholder="Hora de Fin (opcional)">
+                        <div class="schedules-section">
+                            <label>Franjas Horarias:</label>
+                            <div id="schedule-rows-add"></div>
+                            <button type="button" class="btn-add-schedule" onclick="addScheduleRow('schedule-rows-add')">+ Añadir Franja</button>
                         </div>
-                        <div class="days-inputs">
-                            <label>Días de Visibilidad:</label>
-                            <div class="days-selector" data-input="visible_days">
-                                <?php foreach ($days_of_week as $day => $abbr): ?>
-                                    <div class="day-toggle active" data-day="<?php echo $day; ?>" tabindex="0" role="button" aria-label="Activar <?php echo $day; ?>">
-                                        <?php echo $abbr; ?>
-                                    </div>
-                                <?php endforeach; ?>
-                            </div>
-                            <?php foreach ($days_of_week as $day => $abbr): ?>
-                                <input type="hidden" name="visible_days[]" value="<?php echo $day; ?>">
-                            <?php endforeach; ?>
-                        </div>
-                        <input type="number" name="required_selections" placeholder="Selecciones Requeridas (ej. 3 para Combo 3 Pizzas)" min="0">
+                        <input type="number" name="required_selections"  placeholder="Selecciones Requeridas (ej. 3 para Combo 3 Pizzas)" min="0">
                         <div class="sub-items-inputs">
                             <label>Productos Incluidos (opcional):</label>
                             <div id="sub-items-add">
@@ -2225,6 +2241,78 @@ $days_of_week = [
         }
 
         // Modal Handling
+        
+        let scheduleIndex = 0;
+
+        function addScheduleRow(containerId, data = null) {
+            const container = document.getElementById(containerId);
+            if (!container) return;
+
+            const idx = scheduleIndex++;
+            const row = document.createElement('div');
+            row.className = 'schedule-row';
+
+            const selectedDays = (data && data.days) ? data.days : [];
+            const start = (data && data.start) ? data.start : '';
+            const end = (data && data.end) ? data.end : '';
+
+            row.innerHTML = `
+                <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                    <input type="time" name="schedule_start[${idx}]" value="${start}">
+                    <input type="time" name="schedule_end[${idx}]" value="${end}">
+                </div>
+
+                <div class="schedule-days">
+                    ${[
+                        ['monday','L'],
+                        ['tuesday','M'],
+                        ['wednesday','X'],
+                        ['thursday','J'],
+                        ['friday','V'],
+                        ['saturday','S'],
+                        ['sunday','D']
+                    ].map(day => `
+                        <label>
+                            <input type="checkbox"
+                                   name="schedule_days[${idx}][]"
+                                   value="${day[0]}"
+                                   ${selectedDays.includes(day[0]) ? 'checked' : ''}>
+                            ${day[1]}
+                        </label>
+                    `).join('')}
+                </div>
+
+                <button type="button" onclick="this.parentElement.remove()">Eliminar franja</button>
+            `;
+
+            container.appendChild(row);
+        }
+
+        function normalizeSchedules(raw) {
+            try {
+                const parsed = JSON.parse(raw || '[]');
+
+                if (Array.isArray(parsed) && parsed.length && parsed[0].days) {
+                    return parsed;
+                }
+
+                if (Array.isArray(parsed)) {
+                    return [{
+                        days: parsed,
+                        start: '',
+                        end: ''
+                    }];
+                }
+            } catch(e) {}
+
+            return [{
+                days: [],
+                start: '',
+                end: ''
+            }];
+        }
+
+
         function openModal(itemId) {
             const modal = document.getElementById('edit-item-modal');
             const modalContent = document.getElementById('modal-form-content');
@@ -2232,7 +2320,7 @@ $days_of_week = [
             const subProducts = <?php echo json_encode($sub_products); ?>[itemId] || [];
 
             if (item) {
-                const visibleDays = JSON.parse(item.visible_days || '[]');
+                const schedules = normalizeSchedules(item.visible_days || '[]');
                 modalContent.innerHTML = `
                     <h3>Editar ${item.name}</h3>
                     <form method="POST" enctype="multipart/form-data" class="modal-form" onsubmit="return validateItemForm(this)">
@@ -2298,24 +2386,12 @@ $days_of_week = [
                         <div id="weekly_special_text_container_${item.id}" style="${item.is_weekly_special ? '' : 'display: none;'}">
                             <input type="text" name="weekly_special_text" class="weekly-special-text" value="${item.weekly_special_text || '¡Pizza de la semana!'}" placeholder="Texto Destacado" ${item.is_secret_menu ? 'disabled' : ''}>
                         </div>
-                        <div class="time-inputs">
-                            <input type="time" name="visible_start_time" value="${item.visible_start_time || ''}">
-                            <input type="time" name="visible_end_time" value="${item.visible_end_time || ''}">
+                        <div class="schedules-section">
+                            <label>Franjas Horarias:</label>
+                            <div id="schedule-rows-${item.id}"></div>
+                            <button type="button" class="btn-add-schedule" onclick="addScheduleRow('schedule-rows-${item.id}')">+ Añadir Franja</button>
                         </div>
-                        <div class="days-inputs">
-                            <label>Días de Visibilidad:</label>
-                            <div class="days-selector" data-input="visible_days">
-                                <?php foreach ($days_of_week as $day => $abbr): ?>
-                                    <div class="day-toggle ${visibleDays.includes('<?php echo $day; ?>') ? 'active' : ''}" data-day="<?php echo $day; ?>" tabindex="0" role="button" aria-label="Activar <?php echo $day; ?>">
-                                        <?php echo $abbr; ?>
-                                    </div>
-                                <?php endforeach; ?>
-                            </div>
-                            <?php foreach ($days_of_week as $day => $abbr): ?>
-                                <input type="hidden" name="visible_days[]" value="<?php echo $day; ?>" ${!visibleDays.includes('<?php echo $day; ?>') ? 'disabled' : ''}>
-                            <?php endforeach; ?>
-                        </div>
-                        <input type="number" name="required_selections" value="${item.required_selections || ''}" placeholder="Selecciones Requeridas (ej. 3 para Combo 3 Pizzas)" min="0">
+                        <input type="number" name="required_selections"  value="${item.required_selections || ''}" placeholder="Selecciones Requeridas (ej. 3 para Combo 3 Pizzas)" min="0">
                         <div class="sub-items-inputs">
                             <label>Productos Incluidos (opcional):</label>
                             <div id="sub-items-${item.id}">
