@@ -348,12 +348,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             }
 
             $stmt = $pdo->prepare("
-                INSERT INTO menu_items (name, price, secondary_price, category_id, image_url, description, is_visible, has_vegan_option, requires_pizza, is_weekly_special, weekly_special_text, visible_start_time, visible_end_time, visible_days, display_order, required_selections, is_secret_menu)
+                INSERT INTO menu_items (name, price, secondary_price, category_id, image_url, description, is_visible, has_vegan_option, requires_pizza, is_weekly_special, weekly_special_text, visible_start_time, visible_end_time, visible_days, visible_schedules, display_order, required_selections, is_secret_menu)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ");
             $stmt->execute([
                 $name, $price, $secondary_price, $category_id, $image_url, $description, $is_visible,
-                $has_vegan_option, $requires_pizza, $is_weekly_special, $weekly_special_text, $visible_start_time, $visible_end_time, $visible_days,
+                $has_vegan_option, $requires_pizza, $is_weekly_special, $weekly_special_text, $visible_start_time, $visible_end_time, $visible_days, $visible_days,
                 $display_order, $required_selections, $is_secret_menu
             ]);
 
@@ -454,12 +454,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $stmt = $pdo->prepare("
                 UPDATE menu_items SET name = ?, price = ?, secondary_price = ?, category_id = ?, image_url = ?, description = ?,
                 is_visible = ?, has_vegan_option = ?, requires_pizza = ?, is_weekly_special = ?, weekly_special_text = ?, visible_start_time = ?, visible_end_time = ?,
-                visible_days = ?, display_order = ?, required_selections = ?, is_secret_menu = ?
+                visible_days = ?, visible_schedules = ?, display_order = ?, required_selections = ?, is_secret_menu = ?
                 WHERE id = ?
             ");
             $stmt->execute([
                 $name, $price, $secondary_price, $category_id, $image_url, $description, $is_visible,
-                $has_vegan_option, $requires_pizza, $is_weekly_special, $weekly_special_text, $visible_start_time, $visible_end_time, $visible_days,
+                $has_vegan_option, $requires_pizza, $is_weekly_special, $weekly_special_text, $visible_start_time, $visible_end_time, $visible_days, $visible_days,
                 $display_order, $required_selections, $is_secret_menu, $id
             ]);
 
