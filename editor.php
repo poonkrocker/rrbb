@@ -2444,6 +2444,14 @@ $days_of_week = [
                 setupImageUrlPreview(form.querySelector('input[name="image_url"]'));
                 setupDaysSelector(form.querySelector('.days-selector'));
                 form.querySelectorAll('.toggle-selector').forEach(setupOptionToggle);
+
+                // Inicializar franjas horarias existentes
+                const scheduleContainerId = `schedule-rows-${item.id}`;
+                if (Array.isArray(schedules) && schedules.length) {
+                    schedules.forEach(schedule => addScheduleRow(scheduleContainerId, schedule));
+                } else {
+                    addScheduleRow(scheduleContainerId);
+                }
                 
                 // Configurar el evento para mostrar/ocultar el campo de texto destacado
                 const weeklySpecialToggle = form.querySelector('[data-option="is_weekly_special"]');
