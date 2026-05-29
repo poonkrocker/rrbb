@@ -300,14 +300,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $visible_start_time = null;
             $visible_end_time   = null;
             $visible_days       = null;
-            if (!empty($_POST['schedule_days']) && is_array($_POST['schedule_days'])) {
+
+            // Nuevo sistema serializado robusto
+            if (!empty($_POST['schedule_payload'])) {
+                $decoded = json_decode($_POST['schedule_payload'], true);
+                if (is_array($decoded) && !empty($decoded)) {
+                    $visible_days = json_encode($decoded, JSON_UNESCAPED_UNICODE);
+                }
+            } elseif (!empty($_POST['schedule_days']) && is_array($_POST['schedule_days'])) {
                 $schedules = [];
                 foreach ($_POST['schedule_days'] as $idx => $days) {
                     if (empty($days)) continue;
                     $start = $_POST['schedule_start'][$idx] ?? '';
                     $end   = $_POST['schedule_end'][$idx]   ?? '';
-                    $schedules[] = ['days'=>array_values(array_filter((array)$days)),'start'=>$start,'end'=>$end];
+                    $schedules[] = [
+                        'days'=>array_values(array_filter((array)$days)),
+                        'start'=>$start,
+                        'end'=>$end
+                    ];
                 }
+
                 if (!empty($schedules)) {
                     $visible_days = json_encode($schedules, JSON_UNESCAPED_UNICODE);
                 }
@@ -387,14 +399,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $visible_start_time = null;
             $visible_end_time   = null;
             $visible_days       = null;
-            if (!empty($_POST['schedule_days']) && is_array($_POST['schedule_days'])) {
+
+            // Nuevo sistema serializado robusto
+            if (!empty($_POST['schedule_payload'])) {
+                $decoded = json_decode($_POST['schedule_payload'], true);
+                if (is_array($decoded) && !empty($decoded)) {
+                    $visible_days = json_encode($decoded, JSON_UNESCAPED_UNICODE);
+                }
+            } elseif (!empty($_POST['schedule_days']) && is_array($_POST['schedule_days'])) {
                 $schedules = [];
                 foreach ($_POST['schedule_days'] as $idx => $days) {
                     if (empty($days)) continue;
                     $start = $_POST['schedule_start'][$idx] ?? '';
                     $end   = $_POST['schedule_end'][$idx]   ?? '';
-                    $schedules[] = ['days'=>array_values(array_filter((array)$days)),'start'=>$start,'end'=>$end];
+                    $schedules[] = [
+                        'days'=>array_values(array_filter((array)$days)),
+                        'start'=>$start,
+                        'end'=>$end
+                    ];
                 }
+
                 if (!empty($schedules)) {
                     $visible_days = json_encode($schedules, JSON_UNESCAPED_UNICODE);
                 }
@@ -2465,6 +2489,47 @@ $days_of_week = [
                 }
             }
         }
+
+        
+        // Serializar franjas antes de enviar formularios
+        document.addEventListener('submit', function(e) {
+            const form = e.target;
+            if (!form || form.tagName !== 'FORM') return;
+
+            const rows = form.querySelectorAll('.schedule-row');
+            if (!rows.length) return;
+
+            const payload = [];
+
+            rows.forEach(row => {
+                const start = row.querySelector('input[name^="schedule_start"]')?.value || '';
+                const end = row.querySelector('input[name^="schedule_end"]')?.value || '';
+
+                const days = Array.from(
+                    row.querySelectorAll('input[name^="schedule_days"]:checked')
+                ).map(el => el.value);
+
+                if (days.length || start || end) {
+                    payload.push({
+                        days,
+                        start,
+                        end
+                    });
+                }
+            });
+
+            let hidden = form.querySelector('input[name="schedule_payload"]');
+
+            if (!hidden) {
+                hidden = document.createElement('input');
+                hidden.type = 'hidden';
+                hidden.name = 'schedule_payload';
+                form.appendChild(hidden);
+            }
+
+            hidden.value = JSON.stringify(payload);
+        });
+
 
         function closeModal() {
             const modal = document.getElementById('edit-item-modal');
