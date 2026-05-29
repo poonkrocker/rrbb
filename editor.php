@@ -159,54 +159,6 @@ if (isset($_POST['action']) && in_array($_POST['action'], ['add_business_hours',
 }
 /* ==== HOURS_PATCH_24PLUS_END ==== */
 
-
-// ---- Inserta metadatos XMP en un archivo WebP ya guardado ----
-function writeXmpToWebP(string $filepath, string $title, string $description = ''): void {
-    $data = @file_get_contents($filepath);
-    if ($data === false || strlen($data) < 12) return;
-    if (substr($data, 0, 4) !== 'RIFF' || substr($data, 8, 4) !== 'WEBP') return;
-
-    $titleEsc = htmlspecialchars($title, ENT_XML1, 'UTF-8');
-    $descEsc  = htmlspecialchars($description, ENT_XML1, 'UTF-8');
-
-    $xmp =
-        '<?xpacket begin="' . "\xEF\xBB\xBF" . '" id="W5M0MpCehiHzreSzNTczkc9d"?>' .
-        '<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="XMP Core 6.0">' .
-        '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">' .
-        '<rdf:Description rdf:about=""' .
-        ' xmlns:dc="http://purl.org/dc/elements/1.1/"' .
-        ' xmlns:xmp="http://ns.adobe.com/xap/1.0/">' .
-        '<dc:title><rdf:Alt><rdf:li xml:lang="x-default">' . $titleEsc . '</rdf:li></rdf:Alt></dc:title>' .
-        ($descEsc !== ''
-            ? '<dc:description><rdf:Alt><rdf:li xml:lang="x-default">' . $descEsc . '</rdf:li></rdf:Alt></dc:description>'
-            : '') .
-        '<xmp:CreatorTool>Arrabbiata Menu Editor</xmp:CreatorTool>' .
-        '</rdf:Description></rdf:RDF></x:xmpmeta>' .
-        '<?xpacket end="w"?>';
-
-    $xmpLen = strlen($xmp);
-    $xmpPadded = ($xmpLen % 2 === 1) ? $xmp . "\x00" : $xmp;
-    $chunk = 'XMP ' . pack('V', $xmpLen) . $xmpPadded;
-
-    $newData = substr($data, 0, 12) . $chunk . substr($data, 12);
-
-    $riffSize = strlen($newData) - 8;
-    $newData  = substr($newData, 0, 4) . pack('V', $riffSize) . substr($newData, 8);
-
-    file_put_contents($filepath, $newData);
-}
-
-// ---- Helper: parsear visible_days en formato franjas ----
-if (!function_exists('parseSchedules')) {
-function parseSchedules(?string $json): array {
-    if (!$json) return [['days' => [], 'start' => '', 'end' => '']];
-    $decoded = json_decode($json, true);
-    if (!is_array($decoded)) return [['days' => [], 'start' => '', 'end' => '']];
-    if (!empty($decoded) && isset($decoded[0]['start'])) return $decoded;
-    $days = array_filter($decoded, 'is_string');
-    return [['days' => array_values($days), 'start' => '', 'end' => '']];
-}}
-
 // ---- Upload seguro de imágenes con procesamiento a 800×800 WebP ----
 function uploadImageSecure(array $file, string $target_dir, string $itemName = '', string $itemDescription = ''): string {
     $allowed_mime = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
@@ -279,11 +231,6 @@ function uploadImageSecure(array $file, string $target_dir, string $itemName = '
     imagedestroy($src);
     imagedestroy($dst);
 
-    // Escribir metadatos XMP (título del producto para SEO)
-    if ($itemName !== '') {
-        writeXmpToWebP($dest, $itemName, $itemDescription);
-    }
-
     // Devolver URL pública absoluta (accesible desde cualquier instalación)
     return $pub_dir . $image_name;
 }
@@ -312,6 +259,7 @@ function uploadImageFromBase64(string $base64data, string $target_dir, string $i
     }
 
     $fake_file = ['error' => UPLOAD_ERR_OK, 'tmp_name' => $tmp];
+    // Parche: mover al lugar correcto temporalmente para que finfo funcione
     $result = uploadImageSecure($fake_file, $target_dir, $itemName, $itemDescription);
     unlink($tmp);
     return $result;
@@ -358,11 +306,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     if (empty($days)) continue;
                     $start = $_POST['schedule_start'][$idx] ?? '';
                     $end   = $_POST['schedule_end'][$idx]   ?? '';
-                    $schedules[] = [
-                        'days'  => array_values(array_filter((array)$days)),
-                        'start' => $start,
-                        'end'   => $end,
-                    ];
+                    $schedules[] = ['days'=>array_values(array_filter((array)$days)),'start'=>$start,'end'=>$end];
                 }
                 if (!empty($schedules)) {
                     $visible_days = json_encode($schedules, JSON_UNESCAPED_UNICODE);
@@ -449,11 +393,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     if (empty($days)) continue;
                     $start = $_POST['schedule_start'][$idx] ?? '';
                     $end   = $_POST['schedule_end'][$idx]   ?? '';
-                    $schedules[] = [
-                        'days'  => array_values(array_filter((array)$days)),
-                        'start' => $start,
-                        'end'   => $end,
-                    ];
+                    $schedules[] = ['days'=>array_values(array_filter((array)$days)),'start'=>$start,'end'=>$end];
                 }
                 if (!empty($schedules)) {
                     $visible_days = json_encode($schedules, JSON_UNESCAPED_UNICODE);
