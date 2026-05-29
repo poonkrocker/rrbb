@@ -307,52 +307,77 @@ try {
 }
 
 // Pre-fetch de ítems por categoría aplicando filtros de día/hora.
-// Se usa la MISMA fuente para el submenú y para la sección, así una
-// categoría sin ítems disponibles ahora (ej. "Promos" fuera de ventana)
-// se oculta consistentemente en ambos lugares.
 $items_by_category = [];
+
 try {
     $items_stmt = $pdo->prepare("
-        SELECT mi.*
+        SELECT DISTINCT mi.*
         FROM menu_items mi
+
+        LEFT JOIN JSON_TABLE(
+            mi.visible_schedules,
+            '$[*]'
+            COLUMNS (
+                days JSON PATH '$.days',
+                start_time VARCHAR(5) PATH '$.start',
+                end_time VARCHAR(5) PATH '$.end'
+            )
+        ) sch ON 1=1
+
         WHERE mi.category_id = ?
           AND mi.is_visible = 1
+
           AND (
-            mi.visible_days IS NULL
-            OR mi.visible_days = '[]'
-            OR JSON_CONTAINS(mi.visible_days, ?)
+                mi.visible_schedules IS NULL
+                OR mi.visible_schedules = ''
+                OR mi.visible_schedules = '[]'
+
+                OR (
+                    JSON_CONTAINS(sch.days, JSON_QUOTE(?))
+
+                    AND (
+                        (sch.start_time <= sch.end_time
+                            AND sch.start_time <= ?
+                            AND sch.end_time >= ?)
+
+                        OR
+
+                        (sch.start_time > sch.end_time
+                            AND (
+                                sch.start_time <= ?
+                                OR sch.end_time >= ?
+                            ))
+                    )
+                )
+
+                OR (
+                    mi.visible_days IS NOT NULL
+                    AND mi.visible_days != '[]'
+                    AND JSON_CONTAINS(mi.visible_days, ?)
+                )
           )
-          AND (
-            (mi.visible_start_time IS NULL AND mi.visible_end_time IS NULL)
-            OR (
-              mi.visible_start_time <= mi.visible_end_time
-              AND mi.visible_start_time <= ?
-              AND mi.visible_end_time   >= ?
-            )
-            OR (
-              mi.visible_start_time > mi.visible_end_time
-              AND (
-                mi.visible_start_time <= ?
-                OR  mi.visible_end_time   >= ?
-              )
-            )
-          )
+
         ORDER BY mi.display_order
     ");
+
     foreach ($categories as $category) {
         $items_stmt->execute([
             $category['id'],
-            json_encode($current_day_es),
-            $current_time, $current_time,  // tramo normal
-            $current_time, $current_time   // cruce de medianoche
+            $current_day_key,
+            $current_time,
+            $current_time,
+            $current_time,
+            $current_time,
+            json_encode($current_day_es)
         ]);
+
         $items_by_category[$category['id']] = $items_stmt->fetchAll(PDO::FETCH_ASSOC);
     }
+
 } catch (PDOException $e) {
     error_log("Error pre-fetching items por categoría: " . $e->getMessage());
     $items_by_category = [];
 }
-
 
 
 // Fetch sub-products
@@ -378,45 +403,84 @@ try {
 
 // Fetch eligible items (visible pizzas)
 $eligible_items = [];
+
 try {
     $stmt = $pdo->prepare("
-        SELECT mi.id, mi.name, mi.price
+        SELECT DISTINCT mi.id, mi.name, mi.price
         FROM menu_items mi
-        WHERE mi.is_visible = 1
-        AND mi.category_id = (SELECT id FROM categories WHERE name = 'Pizzas' LIMIT 1)
-        AND (
-            mi.visible_days IS NULL
-            OR mi.visible_days = '[]'
-            OR JSON_CONTAINS(mi.visible_days, ?)
-        )
-        AND (
-            (mi.visible_start_time IS NULL AND mi.visible_end_time IS NULL)
-            OR (
-                mi.visible_start_time <= mi.visible_end_time
-                AND mi.visible_start_time <= ?
-                AND mi.visible_end_time >= ?
+
+        LEFT JOIN JSON_TABLE(
+            mi.visible_schedules,
+            '$[*]'
+            COLUMNS (
+                days JSON PATH '$.days',
+                start_time VARCHAR(5) PATH '$.start',
+                end_time VARCHAR(5) PATH '$.end'
             )
+        ) sch ON 1=1
+
+        WHERE mi.is_visible = 1
+
+        AND mi.category_id = (
+            SELECT id
+            FROM categories
+            WHERE name = 'Pizzas'
+            LIMIT 1
+        )
+
+        AND (
+            mi.visible_schedules IS NULL
+            OR mi.visible_schedules = ''
+            OR mi.visible_schedules = '[]'
+
             OR (
-                mi.visible_start_time > mi.visible_end_time
+                JSON_CONTAINS(sch.days, JSON_QUOTE(?))
+
                 AND (
-                    mi.visible_start_time <= ?
-                    OR mi.visible_end_time >= ?
+                    (
+                        sch.start_time <= sch.end_time
+                        AND sch.start_time <= ?
+                        AND sch.end_time >= ?
+                    )
+
+                    OR
+
+                    (
+                        sch.start_time > sch.end_time
+                        AND (
+                            sch.start_time <= ?
+                            OR sch.end_time >= ?
+                        )
+                    )
                 )
             )
+
+            OR (
+                mi.visible_days IS NOT NULL
+                AND mi.visible_days != '[]'
+                AND JSON_CONTAINS(mi.visible_days, ?)
+            )
         )
+
         ORDER BY mi.name
     ");
+
     $stmt->execute([
-        json_encode($current_day_es),
+        $current_day_key,
         $current_time,
         $current_time,
         $current_time,
-        $current_time
+        $current_time,
+        json_encode($current_day_es)
     ]);
-    $eligible_items = $stmt->fetchAll();
+
+    $eligible_items = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
 } catch (PDOException $e) {
+    error_log("Error eligible_items: " . $e->getMessage());
     $eligible_items = [];
 }
+
 
 // ===========================================================
 // Construcción del Schema.org (JSON-LD) - DINÁMICO
