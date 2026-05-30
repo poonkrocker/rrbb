@@ -258,6 +258,60 @@ function buildOpeningHoursSchema($rows) {
     return $result;
 }
 
+// ---- Helper: verificar si un ítem es visible ahora según sus franjas ----
+function isItemVisibleNow(array $item, string $currentDayEs, string $currentTime): bool {
+    $json = $item['visible_days'] ?? null;
+
+    // Sin restricción de días → siempre visible
+    if (!$json || $json === '[]' || $json === 'null') {
+        // Verificar horario legado si existe
+        $start = $item['visible_start_time'] ?? null;
+        $end   = $item['visible_end_time']   ?? null;
+        if (!$start && !$end) return true;
+        if ($start && $end) {
+            if ($start <= $end) return $currentTime >= $start && $currentTime <= $end;
+            return $currentTime >= $start || $currentTime <= $end;
+        }
+        return true;
+    }
+
+    $decoded = json_decode($json, true);
+    if (!is_array($decoded) || empty($decoded)) return true;
+
+    // Formato nuevo: array de objetos con clave 'start'
+    if (isset($decoded[0]['start'])) {
+        foreach ($decoded as $franja) {
+            $days  = $franja['days']  ?? [];
+            $start = $franja['start'] ?? '';
+            $end   = $franja['end']   ?? '';
+            if (!in_array($currentDayEs, $days, true)) continue;
+            // Si no hay horario definido en la franja, el día basta
+            if ($start === '' && $end === '') return true;
+            if ($start !== '' && $end !== '') {
+                if ($start <= $end) {
+                    if ($currentTime >= $start && $currentTime <= $end) return true;
+                } else {
+                    if ($currentTime >= $start || $currentTime <= $end) return true;
+                }
+            } else {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Formato legado: array plano de días
+    if (!in_array($currentDayEs, $decoded, true)) return false;
+    $start = $item['visible_start_time'] ?? null;
+    $end   = $item['visible_end_time']   ?? null;
+    if (!$start && !$end) return true;
+    if ($start && $end) {
+        if ($start <= $end) return $currentTime >= $start && $currentTime <= $end;
+        return $currentTime >= $start || $currentTime <= $end;
+    }
+    return true;
+}
+
 // Verificar si el negocio está abierto y obtener horarios
 $is_open = false;
 $closed_message = "Estamos cerrados ahora. Horarios de atención:<br>";
@@ -307,107 +361,32 @@ try {
 }
 
 // Pre-fetch de ítems por categoría aplicando filtros de día/hora.
-function itemIsVisibleNow($item, $current_day_es, $current_day_key, $current_time) {
-
-    // NUEVO FORMATO
-    if (!empty($item['visible_schedules'])) {
-
-        $schedules = json_decode($item['visible_schedules'], true);
-
-        if (is_array($schedules) && count($schedules) > 0) {
-
-            foreach ($schedules as $schedule) {
-
-                if (
-                    empty($schedule['days']) ||
-                    !in_array($current_day_key, $schedule['days'])
-                ) {
-                    continue;
-                }
-
-                $start = $schedule['start'] ?? '';
-                $end   = $schedule['end'] ?? '';
-
-                if (!$start || !$end) {
-                    return true;
-                }
-
-                // horario normal
-                if ($start <= $end) {
-                    if ($current_time >= $start && $current_time <= $end) {
-                        return true;
-                    }
-                }
-
-                // cruce medianoche
-                else {
-                    if (
-                        $current_time >= $start ||
-                        $current_time <= $end
-                    ) {
-                        return true;
-                    }
-                }
-            }
-
-            return false;
-        }
-    }
-
-    // FORMATO VIEJO
-    if (
-        empty($item['visible_days']) ||
-        $item['visible_days'] === '[]'
-    ) {
-        return true;
-    }
-
-    $days = json_decode($item['visible_days'], true);
-
-    if (!is_array($days)) {
-        return true;
-    }
-
-    return in_array($current_day_es, $days);
-}
-
+// Se usa la MISMA fuente para el submenú y para la sección, así una
+// categoría sin ítems disponibles ahora (ej. "Promos" fuera de ventana)
+// se oculta consistentemente en ambos lugares.
 $items_by_category = [];
-
 try {
-
     $items_stmt = $pdo->prepare("
-        SELECT *
-        FROM menu_items
-        WHERE category_id = ?
-        AND is_visible = 1
-        ORDER BY display_order
+        SELECT mi.*
+        FROM menu_items mi
+        WHERE mi.category_id = ?
+          AND mi.is_visible = 1
+        ORDER BY mi.display_order
     ");
-
     foreach ($categories as $category) {
-
         $items_stmt->execute([$category['id']]);
-
-        $raw_items = $items_stmt->fetchAll(PDO::FETCH_ASSOC);
-
+        $all_items = $items_stmt->fetchAll(PDO::FETCH_ASSOC);
         $items_by_category[$category['id']] = array_values(array_filter(
-            $raw_items,
-            function($item) use ($current_day_es, $current_day_key, $current_time) {
-                return itemIsVisibleNow(
-                    $item,
-                    $current_day_es,
-                    $current_day_key,
-                    $current_time
-                );
-            }
+            $all_items,
+            fn($it) => isItemVisibleNow($it, $current_day_es, $current_time)
         ));
     }
-
 } catch (PDOException $e) {
-
     error_log("Error pre-fetching items por categoría: " . $e->getMessage());
-
     $items_by_category = [];
 }
+
+
 
 // Fetch sub-products
 $sub_products = [];
@@ -432,46 +411,24 @@ try {
 
 // Fetch eligible items (visible pizzas)
 $eligible_items = [];
-
 try {
-
     $stmt = $pdo->prepare("
-        SELECT id, name, price, visible_days, visible_schedules
-        FROM menu_items
-        WHERE is_visible = 1
-        AND category_id = (
-            SELECT id
-            FROM categories
-            WHERE name = 'Pizzas'
-            LIMIT 1
-        )
-        ORDER BY name
+        SELECT mi.id, mi.name, mi.price, mi.visible_days, mi.visible_start_time, mi.visible_end_time
+        FROM menu_items mi
+        WHERE mi.is_visible = 1
+        AND mi.category_id = (SELECT id FROM categories WHERE name = 'Pizzas' LIMIT 1)
+        ORDER BY mi.name
     ");
-
     $stmt->execute();
-
-    $raw_items = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
+    $all_eligible = $stmt->fetchAll(PDO::FETCH_ASSOC);
     $eligible_items = array_values(array_filter(
-        $raw_items,
-        function($item) use ($current_day_es, $current_day_key, $current_time) {
-            return itemIsVisibleNow(
-                $item,
-                $current_day_es,
-                $current_day_key,
-                $current_time
-            );
-        }
+        $all_eligible,
+        fn($it) => isItemVisibleNow($it, $current_day_es, $current_time)
     ));
-
 } catch (PDOException $e) {
-
-    error_log("Error eligible_items: " . $e->getMessage());
-
     $eligible_items = [];
 }
 
-// ===========================================================
 // ===========================================================
 // Construcción del Schema.org (JSON-LD) - DINÁMICO
 // ===========================================================
