@@ -159,6 +159,45 @@ if (isset($_POST['action']) && in_array($_POST['action'], ['add_business_hours',
 }
 /* ==== HOURS_PATCH_24PLUS_END ==== */
 
+// ---- Inserta metadatos XMP en un archivo WebP ya guardado ----
+function writeXmpToWebP(string $filepath, string $title, string $description = ''): void {
+    $data = @file_get_contents($filepath);
+    if ($data === false || strlen($data) < 12) return;
+    if (substr($data, 0, 4) !== 'RIFF' || substr($data, 8, 4) !== 'WEBP') return;
+
+    $titleEsc = htmlspecialchars($title, ENT_XML1, 'UTF-8');
+    $descEsc  = htmlspecialchars($description, ENT_XML1, 'UTF-8');
+
+    $xmp =
+        '<?xpacket begin="' . "\xEF\xBB\xBF" . '" id="W5M0MpCehiHzreSzNTczkc9d"?>' .
+        '<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="XMP Core 6.0">' .
+        '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">' .
+        '<rdf:Description rdf:about=""' .
+        ' xmlns:dc="http://purl.org/dc/elements/1.1/"' .
+        ' xmlns:xmp="http://ns.adobe.com/xap/1.0/">' .
+        '<dc:title><rdf:Alt><rdf:li xml:lang="x-default">' . $titleEsc . '</rdf:li></rdf:Alt></dc:title>' .
+        ($descEsc !== ''
+            ? '<dc:description><rdf:Alt><rdf:li xml:lang="x-default">' . $descEsc . '</rdf:li></rdf:Alt></dc:description>'
+            : '') .
+        '<xmp:CreatorTool>Arrabbiata Menu Editor</xmp:CreatorTool>' .
+        '</rdf:Description></rdf:RDF></x:xmpmeta>' .
+        '<?xpacket end="w"?>';
+
+    $xmpLen = strlen($xmp);
+    // WebP chunks deben tener tamaño par; si es impar se agrega un byte de padding
+    $xmpPadded = ($xmpLen % 2 === 1) ? $xmp . "\x00" : $xmp;
+    $chunk = 'XMP ' . pack('V', $xmpLen) . $xmpPadded;
+
+    // Insertar el chunk XMP justo después del header RIFF????WEBP (primeros 12 bytes)
+    $newData = substr($data, 0, 12) . $chunk . substr($data, 12);
+
+    // Actualizar el tamaño del RIFF (bytes 4-7, little-endian, = tamaño total - 8)
+    $riffSize = strlen($newData) - 8;
+    $newData  = substr($newData, 0, 4) . pack('V', $riffSize) . substr($newData, 8);
+
+    file_put_contents($filepath, $newData);
+}
+
 // ---- Upload seguro de imágenes con procesamiento a 800×800 WebP ----
 function uploadImageSecure(array $file, string $target_dir, string $itemName = '', string $itemDescription = ''): string {
     $allowed_mime = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
@@ -231,6 +270,11 @@ function uploadImageSecure(array $file, string $target_dir, string $itemName = '
     imagedestroy($src);
     imagedestroy($dst);
 
+    // Escribir metadatos XMP (título del producto para SEO)
+    if ($itemName !== '') {
+        writeXmpToWebP($dest, $itemName, $itemDescription);
+    }
+
     // Devolver URL pública absoluta (accesible desde cualquier instalación)
     return $pub_dir . $image_name;
 }
@@ -259,11 +303,23 @@ function uploadImageFromBase64(string $base64data, string $target_dir, string $i
     }
 
     $fake_file = ['error' => UPLOAD_ERR_OK, 'tmp_name' => $tmp];
-    // Parche: mover al lugar correcto temporalmente para que finfo funcione
     $result = uploadImageSecure($fake_file, $target_dir, $itemName, $itemDescription);
     unlink($tmp);
     return $result;
 }
+
+// ---- Helper: parsear visible_days en formato franjas ----
+if (!function_exists('parseSchedules')) {
+function parseSchedules(?string $json): array {
+    if (!$json) return [['days' => [], 'start' => '', 'end' => '']];
+    $decoded = json_decode($json, true);
+    if (!is_array($decoded)) return [['days' => [], 'start' => '', 'end' => '']];
+    // Formato nuevo: array de objetos con clave 'start'
+    if (!empty($decoded) && isset($decoded[0]['start'])) return $decoded;
+    // Formato legado: array plano de días → migrar a franja sin horario
+    $days = array_filter($decoded, 'is_string');
+    return [['days' => array_values($days), 'start' => '', 'end' => '']];
+}}
 
 // ---- Token CSRF ----
 if (empty($_SESSION['csrf_token'])) {
@@ -297,29 +353,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             if ($is_secret_menu) {
                 $weekly_special_text = 'Carta Secreta!';
             }
-            $visible_start_time = null;
+            $visible_start_time = null; // ya no se usa; las franjas van en visible_days
             $visible_end_time   = null;
             $visible_days       = null;
-
-            // Nuevo sistema serializado robusto
-            if (!empty($_POST['schedule_payload'])) {
-                $decoded = json_decode($_POST['schedule_payload'], true);
-                if (is_array($decoded) && !empty($decoded)) {
-                    $visible_days = json_encode($decoded, JSON_UNESCAPED_UNICODE);
-                }
-            } elseif (!empty($_POST['schedule_days']) && is_array($_POST['schedule_days'])) {
+            if (!empty($_POST['schedule_days']) && is_array($_POST['schedule_days'])) {
                 $schedules = [];
                 foreach ($_POST['schedule_days'] as $idx => $days) {
                     if (empty($days)) continue;
                     $start = $_POST['schedule_start'][$idx] ?? '';
                     $end   = $_POST['schedule_end'][$idx]   ?? '';
                     $schedules[] = [
-                        'days'=>array_values(array_filter((array)$days)),
-                        'start'=>$start,
-                        'end'=>$end
+                        'days'  => array_values(array_filter((array)$days)),
+                        'start' => $start,
+                        'end'   => $end,
                     ];
                 }
-
                 if (!empty($schedules)) {
                     $visible_days = json_encode($schedules, JSON_UNESCAPED_UNICODE);
                 }
@@ -348,12 +396,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             }
 
             $stmt = $pdo->prepare("
-                INSERT INTO menu_items (name, price, secondary_price, category_id, image_url, description, is_visible, has_vegan_option, requires_pizza, is_weekly_special, weekly_special_text, visible_start_time, visible_end_time, visible_days, visible_schedules, display_order, required_selections, is_secret_menu)
+                INSERT INTO menu_items (name, price, secondary_price, category_id, image_url, description, is_visible, has_vegan_option, requires_pizza, is_weekly_special, weekly_special_text, visible_start_time, visible_end_time, visible_days, display_order, required_selections, is_secret_menu)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ");
             $stmt->execute([
                 $name, $price, $secondary_price, $category_id, $image_url, $description, $is_visible,
-                $has_vegan_option, $requires_pizza, $is_weekly_special, $weekly_special_text, $visible_start_time, $visible_end_time, $visible_days, $visible_days,
+                $has_vegan_option, $requires_pizza, $is_weekly_special, $weekly_special_text, $visible_start_time, $visible_end_time, $visible_days,
                 $display_order, $required_selections, $is_secret_menu
             ]);
 
@@ -396,29 +444,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             if ($is_secret_menu) {
                 $weekly_special_text = 'Carta Secreta!';
             }
-            $visible_start_time = null;
+            $visible_start_time = null; // ya no se usa; las franjas van en visible_days
             $visible_end_time   = null;
             $visible_days       = null;
-
-            // Nuevo sistema serializado robusto
-            if (!empty($_POST['schedule_payload'])) {
-                $decoded = json_decode($_POST['schedule_payload'], true);
-                if (is_array($decoded) && !empty($decoded)) {
-                    $visible_days = json_encode($decoded, JSON_UNESCAPED_UNICODE);
-                }
-            } elseif (!empty($_POST['schedule_days']) && is_array($_POST['schedule_days'])) {
+            if (!empty($_POST['schedule_days']) && is_array($_POST['schedule_days'])) {
                 $schedules = [];
                 foreach ($_POST['schedule_days'] as $idx => $days) {
                     if (empty($days)) continue;
                     $start = $_POST['schedule_start'][$idx] ?? '';
                     $end   = $_POST['schedule_end'][$idx]   ?? '';
                     $schedules[] = [
-                        'days'=>array_values(array_filter((array)$days)),
-                        'start'=>$start,
-                        'end'=>$end
+                        'days'  => array_values(array_filter((array)$days)),
+                        'start' => $start,
+                        'end'   => $end,
                     ];
                 }
-
                 if (!empty($schedules)) {
                     $visible_days = json_encode($schedules, JSON_UNESCAPED_UNICODE);
                 }
@@ -454,12 +494,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $stmt = $pdo->prepare("
                 UPDATE menu_items SET name = ?, price = ?, secondary_price = ?, category_id = ?, image_url = ?, description = ?,
                 is_visible = ?, has_vegan_option = ?, requires_pizza = ?, is_weekly_special = ?, weekly_special_text = ?, visible_start_time = ?, visible_end_time = ?,
-                visible_days = ?, visible_schedules = ?, display_order = ?, required_selections = ?, is_secret_menu = ?
+                visible_days = ?, display_order = ?, required_selections = ?, is_secret_menu = ?
                 WHERE id = ?
             ");
             $stmt->execute([
                 $name, $price, $secondary_price, $category_id, $image_url, $description, $is_visible,
-                $has_vegan_option, $requires_pizza, $is_weekly_special, $weekly_special_text, $visible_start_time, $visible_end_time, $visible_days, $visible_days,
+                $has_vegan_option, $requires_pizza, $is_weekly_special, $weekly_special_text, $visible_start_time, $visible_end_time, $visible_days,
                 $display_order, $required_selections, $is_secret_menu, $id
             ]);
 
@@ -1008,35 +1048,7 @@ $days_of_week = [
             border: 2px solid transparent;
         }
 
-        
-        .schedule-row{
-            border:1px solid #ddd;
-            border-radius:12px;
-            padding:12px;
-            margin:10px 0;
-            display:flex;
-            flex-direction:column;
-            gap:10px;
-        }
-        .schedule-days{
-            display:flex;
-            flex-wrap:wrap;
-            gap:8px;
-        }
-        .schedule-days label{
-            font-size:14px;
-            display:flex;
-            align-items:center;
-            gap:4px;
-            margin:0;
-        }
-        .btn-add-schedule{
-            padding:10px 14px;
-            border-radius:10px;
-            border:none;
-            cursor:pointer;
-        }
-.day-toggle.active,
+        .day-toggle.active,
         .option-toggle.active {
             background-color: #cc0000;
             color: white;
@@ -1492,6 +1504,22 @@ $days_of_week = [
                 max-height: 120px;
             }
         }
+        .btn-add-schedule {
+            background: #e8f5e9;
+            color: #2e7d32;
+            border: 1.5px dashed #66bb6a;
+            padding: 7px 18px;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 600;
+            transition: all 0.2s ease;
+            margin-top: 4px;
+        }
+        .btn-add-schedule:hover {
+            background: #c8e6c9;
+            border-color: #388e3c;
+        }
     </style>
 </head>
 <body>
@@ -1907,11 +1935,17 @@ $days_of_week = [
                             <input type="text" name="weekly_special_text" class="weekly-special-text" placeholder="Texto Destacado" value="¡Pizza de la semana!">
                         </div>
                         <div class="schedules-section">
-                            <label>Franjas Horarias:</label>
-                            <div id="schedule-rows-add"></div>
-                            <button type="button" class="btn-add-schedule" onclick="addScheduleRow('schedule-rows-add')">+ Añadir Franja</button>
+                            <label style="font-weight:700;font-size:1rem;color:#333;display:block;margin-bottom:8px;">
+                                Franjas de disponibilidad:
+                            </label>
+                            <div class="schedules-container" id="schedules-add">
+                                <!-- Las franjas se insertan aquí por JS -->
+                            </div>
+                            <button type="button" class="btn-add-schedule" onclick="addScheduleRow(document.getElementById('schedules-add'), <?php echo htmlspecialchars(json_encode(array_keys($days_of_week)), ENT_QUOTES); ?>, <?php echo htmlspecialchars(json_encode(array_values($days_of_week)), ENT_QUOTES); ?>)">
+                                + Agregar franja horaria
+                            </button>
                         </div>
-                        <input type="number" name="required_selections"  placeholder="Selecciones Requeridas (ej. 3 para Combo 3 Pizzas)" min="0">
+                        <input type="number" name="required_selections" placeholder="Selecciones Requeridas (ej. 3 para Combo 3 Pizzas)" min="0">
                         <div class="sub-items-inputs">
                             <label>Productos Incluidos (opcional):</label>
                             <div id="sub-items-add">
@@ -2265,78 +2299,6 @@ $days_of_week = [
         }
 
         // Modal Handling
-        
-        let scheduleIndex = 0;
-
-        function addScheduleRow(containerId, data = null) {
-            const container = document.getElementById(containerId);
-            if (!container) return;
-
-            const idx = scheduleIndex++;
-            const row = document.createElement('div');
-            row.className = 'schedule-row';
-
-            const selectedDays = (data && data.days) ? data.days : [];
-            const start = (data && data.start) ? data.start : '';
-            const end = (data && data.end) ? data.end : '';
-
-            row.innerHTML = `
-                <div style="display:flex;gap:10px;flex-wrap:wrap;">
-                    <input type="time" name="schedule_start[${idx}]" value="${start}">
-                    <input type="time" name="schedule_end[${idx}]" value="${end}">
-                </div>
-
-                <div class="schedule-days">
-                    ${[
-                        ['monday','L'],
-                        ['tuesday','M'],
-                        ['wednesday','X'],
-                        ['thursday','J'],
-                        ['friday','V'],
-                        ['saturday','S'],
-                        ['sunday','D']
-                    ].map(day => `
-                        <label>
-                            <input type="checkbox"
-                                   name="schedule_days[${idx}][]"
-                                   value="${day[0]}"
-                                   ${selectedDays.includes(day[0]) ? 'checked' : ''}>
-                            ${day[1]}
-                        </label>
-                    `).join('')}
-                </div>
-
-                <button type="button" onclick="this.parentElement.remove()">Eliminar franja</button>
-            `;
-
-            container.appendChild(row);
-        }
-
-        function normalizeSchedules(raw) {
-            try {
-                const parsed = JSON.parse(raw || '[]');
-
-                if (Array.isArray(parsed) && parsed.length && parsed[0].days) {
-                    return parsed;
-                }
-
-                if (Array.isArray(parsed)) {
-                    return [{
-                        days: parsed,
-                        start: '',
-                        end: ''
-                    }];
-                }
-            } catch(e) {}
-
-            return [{
-                days: [],
-                start: '',
-                end: ''
-            }];
-        }
-
-
         function openModal(itemId) {
             const modal = document.getElementById('edit-item-modal');
             const modalContent = document.getElementById('modal-form-content');
@@ -2344,7 +2306,6 @@ $days_of_week = [
             const subProducts = <?php echo json_encode($sub_products); ?>[itemId] || [];
 
             if (item) {
-                const schedules = normalizeSchedules(item.visible_days || '[]');
                 modalContent.innerHTML = `
                     <h3>Editar ${item.name}</h3>
                     <form method="POST" enctype="multipart/form-data" class="modal-form" onsubmit="return validateItemForm(this)">
@@ -2411,11 +2372,16 @@ $days_of_week = [
                             <input type="text" name="weekly_special_text" class="weekly-special-text" value="${item.weekly_special_text || '¡Pizza de la semana!'}" placeholder="Texto Destacado" ${item.is_secret_menu ? 'disabled' : ''}>
                         </div>
                         <div class="schedules-section">
-                            <label>Franjas Horarias:</label>
-                            <div id="schedule-rows-${item.id}"></div>
-                            <button type="button" class="btn-add-schedule" onclick="addScheduleRow('schedule-rows-${item.id}')">+ Añadir Franja</button>
+                            <label style="font-weight:700;font-size:1rem;color:#333;display:block;margin-bottom:8px;">
+                                Franjas de disponibilidad:
+                            </label>
+                            <div class="schedules-container" id="schedules-edit-${item.id}"></div>
+                            <button type="button" class="btn-add-schedule"
+                                onclick="addScheduleRow(document.getElementById('schedules-edit-${item.id}'), null, null, [], '', '')">
+                                + Agregar franja horaria
+                            </button>
                         </div>
-                        <input type="number" name="required_selections"  value="${item.required_selections || ''}" placeholder="Selecciones Requeridas (ej. 3 para Combo 3 Pizzas)" min="0">
+                        <input type="number" name="required_selections" value="${item.required_selections || ''}" placeholder="Selecciones Requeridas (ej. 3 para Combo 3 Pizzas)" min="0">
                         <div class="sub-items-inputs">
                             <label>Productos Incluidos (opcional):</label>
                             <div id="sub-items-${item.id}">
@@ -2462,20 +2428,33 @@ $days_of_week = [
                     </form>
                 `;
                 modal.style.display = 'flex';
+                // Poblar franjas de horario existentes
+                (function() {
+                    var schedContainer = form.querySelector('.schedules-container');
+                    if (!schedContainer) return;
+                    var rawSchedules = [];
+                    try {
+                        var parsed = JSON.parse(item.visible_days || '[]');
+                        if (Array.isArray(parsed) && parsed.length > 0) {
+                            if (typeof parsed[0] === 'object' && parsed[0] !== null && 'start' in parsed[0]) {
+                                rawSchedules = parsed;
+                            } else if (typeof parsed[0] === 'string') {
+                                rawSchedules = [{ days: parsed, start: item.visible_start_time || '', end: item.visible_end_time || '' }];
+                            }
+                        }
+                    } catch(e) {}
+                    if (rawSchedules.length === 0) {
+                        rawSchedules = [{ days: _scheduleAllDays, start: '', end: '' }];
+                    }
+                    rawSchedules.forEach(function(s) {
+                        addScheduleRow(schedContainer, null, null, s.days || [], s.start || '', s.end || '');
+                    });
+                })();
                 // Setup event listeners for the modal form
                 const form = modalContent.querySelector('form');
                 setupImagePreview(form.querySelector('input[type="file"]'));
                 setupImageUrlPreview(form.querySelector('input[name="image_url"]'));
-                setupDaysSelector(form.querySelector('.days-selector'));
                 form.querySelectorAll('.toggle-selector').forEach(setupOptionToggle);
-
-                // Inicializar franjas horarias existentes
-                const scheduleContainerId = `schedule-rows-${item.id}`;
-                if (Array.isArray(schedules) && schedules.length) {
-                    schedules.forEach(schedule => addScheduleRow(scheduleContainerId, schedule));
-                } else {
-                    addScheduleRow(scheduleContainerId);
-                }
                 
                 // Configurar el evento para mostrar/ocultar el campo de texto destacado
                 const weeklySpecialToggle = form.querySelector('[data-option="is_weekly_special"]');
@@ -2489,47 +2468,6 @@ $days_of_week = [
                 }
             }
         }
-
-        
-        // Serializar franjas antes de enviar formularios
-        document.addEventListener('submit', function(e) {
-            const form = e.target;
-            if (!form || form.tagName !== 'FORM') return;
-
-            const rows = form.querySelectorAll('.schedule-row');
-            if (!rows.length) return;
-
-            const payload = [];
-
-            rows.forEach(row => {
-                const start = row.querySelector('input[name^="schedule_start"]')?.value || '';
-                const end = row.querySelector('input[name^="schedule_end"]')?.value || '';
-
-                const days = Array.from(
-                    row.querySelectorAll('input[name^="schedule_days"]:checked')
-                ).map(el => el.value);
-
-                if (days.length || start || end) {
-                    payload.push({
-                        days,
-                        start,
-                        end
-                    });
-                }
-            });
-
-            let hidden = form.querySelector('input[name="schedule_payload"]');
-
-            if (!hidden) {
-                hidden = document.createElement('input');
-                hidden.type = 'hidden';
-                hidden.name = 'schedule_payload';
-                form.appendChild(hidden);
-            }
-
-            hidden.value = JSON.stringify(payload);
-        });
-
 
         function closeModal() {
             const modal = document.getElementById('edit-item-modal');
@@ -2558,6 +2496,101 @@ $days_of_week = [
                 closeModal();
             }
         });
+        // ── Franjas de horario múltiples ──────────────────────────────────────────────
+        var _scheduleAllDays = <?php echo json_encode(array_keys($days_of_week)); ?>;
+        var _scheduleAllAbbr = <?php echo json_encode(array_values($days_of_week)); ?>;
+
+        function addScheduleRow(container, allDays, allAbbr, activeDays, startVal, endVal) {
+            allDays    = allDays  || _scheduleAllDays;
+            allAbbr    = allAbbr  || _scheduleAllAbbr;
+            activeDays = activeDays || allDays;
+            startVal   = startVal || '';
+            endVal     = endVal   || '';
+
+            var idx = container.querySelectorAll('.schedule-row').length;
+
+            var row = document.createElement('div');
+            row.className = 'schedule-row';
+            row.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:#f9f9f9;border:1px solid #ddd;border-radius:10px;padding:10px 14px;margin-bottom:8px;';
+
+            var daysWrap = document.createElement('div');
+            daysWrap.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;';
+            var daysLabel = document.createElement('span');
+            daysLabel.textContent = 'Días:';
+            daysLabel.style.cssText = 'font-size:0.85rem;font-weight:600;color:#555;margin-right:4px;';
+            daysWrap.appendChild(daysLabel);
+
+            allDays.forEach(function(day, di) {
+                var isActive = activeDays.length === 0 || activeDays.indexOf(day) !== -1;
+                var toggle = document.createElement('div');
+                toggle.className = 'day-toggle' + (isActive ? ' active' : '');
+                toggle.textContent = allAbbr[di];
+                toggle.dataset.day = day;
+                toggle.title = day;
+                toggle.tabIndex = 0;
+                toggle.style.cssText = 'width:32px;height:32px;font-size:13px;';
+                toggle.addEventListener('click', function() { toggle.classList.toggle('active'); });
+                toggle.addEventListener('keydown', function(e) {
+                    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle.click(); }
+                });
+
+                var hiddenDay = document.createElement('input');
+                hiddenDay.type = 'hidden';
+                hiddenDay.name = 'schedule_days[' + idx + '][]';
+                hiddenDay.value = day;
+                hiddenDay.disabled = !isActive;
+                toggle.addEventListener('click', function() {
+                    hiddenDay.disabled = !toggle.classList.contains('active');
+                });
+
+                daysWrap.appendChild(toggle);
+                daysWrap.appendChild(hiddenDay);
+            });
+            row.appendChild(daysWrap);
+
+            var startLabel = document.createElement('label');
+            startLabel.textContent = 'Desde:';
+            startLabel.style.cssText = 'font-size:0.85rem;font-weight:600;color:#555;';
+            row.appendChild(startLabel);
+            var startInput = document.createElement('input');
+            startInput.type = 'time';
+            startInput.name = 'schedule_start[' + idx + ']';
+            startInput.value = startVal;
+            startInput.style.cssText = 'padding:6px 10px;border:1px solid #ddd;border-radius:20px;font-size:0.9rem;max-width:130px;';
+            row.appendChild(startInput);
+
+            var endLabel = document.createElement('label');
+            endLabel.textContent = 'Hasta:';
+            endLabel.style.cssText = 'font-size:0.85rem;font-weight:600;color:#555;';
+            row.appendChild(endLabel);
+            var endInput = document.createElement('input');
+            endInput.type = 'time';
+            endInput.name = 'schedule_end[' + idx + ']';
+            endInput.value = endVal;
+            endInput.style.cssText = 'padding:6px 10px;border:1px solid #ddd;border-radius:20px;font-size:0.9rem;max-width:130px;';
+            row.appendChild(endInput);
+
+            if (container.querySelectorAll('.schedule-row').length > 0) {
+                var removeBtn = document.createElement('button');
+                removeBtn.type = 'button';
+                removeBtn.textContent = '✕';
+                removeBtn.title = 'Eliminar esta franja';
+                removeBtn.style.cssText = 'background:none;border:1px solid #cc0000;color:#cc0000;border-radius:50%;width:28px;height:28px;cursor:pointer;font-size:14px;line-height:1;padding:0;flex-shrink:0;';
+                removeBtn.addEventListener('click', function() { row.remove(); });
+                row.appendChild(removeBtn);
+            }
+
+            container.appendChild(row);
+        }
+
+        // Inicializar el formulario de agregar con una franja por defecto
+        (function() {
+            var c = document.getElementById('schedules-add');
+            if (c) {
+                addScheduleRow(c, _scheduleAllDays, _scheduleAllAbbr, [], '', '');
+            }
+        })();
+
     </script>
     <script>
     // ══════════════════════════════════════════════════════════════════════
