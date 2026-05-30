@@ -2428,6 +2428,8 @@ $days_of_week = [
                     </form>
                 `;
                 modal.style.display = 'flex';
+                // Setup event listeners for the modal form
+                const form = modalContent.querySelector('form');
                 // Poblar franjas de horario existentes
                 (function() {
                     var schedContainer = form.querySelector('.schedules-container');
@@ -2451,7 +2453,6 @@ $days_of_week = [
                     });
                 })();
                 // Setup event listeners for the modal form
-                const form = modalContent.querySelector('form');
                 setupImagePreview(form.querySelector('input[type="file"]'));
                 setupImageUrlPreview(form.querySelector('input[name="image_url"]'));
                 form.querySelectorAll('.toggle-selector').forEach(setupOptionToggle);
