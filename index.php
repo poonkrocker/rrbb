@@ -645,6 +645,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
                 <li><a href="#home">Home</a></li>
                 <li><a href="#nosotros">Nosotros</a></li>
                 <li><a href="#carta">Carta</a></li>
+                <li><a href="tienda.php">Tienda</a></li>
                 <li><a href="#ubicacion">Ubicación</a></li>
             </ul>
         </nav>
