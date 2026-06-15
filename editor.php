@@ -768,9 +768,9 @@ $days_of_week = [
         }
         #crop-modal-inner h4 {
             margin: 0;
-            font-family: 'Alberdi', cursive;
-            font-size: 1.3rem;
-            color: #333;
+            font-family: 'Alberdini', 'Alberdi', serif;
+            font-size: 1.4rem;
+            color: var(--rojo, #CC1414);
         }
         #crop-container {
             width: 100%;
@@ -796,9 +796,9 @@ $days_of_week = [
             font-weight: 600;
             font-size: 0.95rem;
         }
-        #btn-crop-confirm { background: #cc0000; color: #fff; }
+        #btn-crop-confirm { background: #CC1414; color: #fff; }
         #btn-crop-cancel  { background: #ddd; color: #333; }
-        #btn-crop-confirm:hover { background: #b30000; }
+        #btn-crop-confirm:hover { background: #D73828; }
         #btn-crop-cancel:hover  { background: #bbb; }
         .crop-preview-thumb {
             width: 60px; height: 60px;
@@ -809,7 +809,19 @@ $days_of_week = [
             vertical-align: middle;
             margin-left: 8px;
         }
+    </style>
     <style>
+        /* ============================================================
+           ESTILO EDITOR — alineado al lenguaje visual del sitio.
+           Paleta del local: ocre, azul eléctrico, rojo cartel.
+           ============================================================ */
+        @font-face {
+            font-family: 'Alberdini';
+            src: url('rrbb.woff2') format('woff2'),
+                 url('rrbb.woff') format('woff');
+            font-weight: normal;
+            font-style: normal;
+        }
         @font-face {
             font-family: 'Alberdi';
             src: url('dk.woff2') format('woff2'),
@@ -817,12 +829,32 @@ $days_of_week = [
             font-weight: normal;
             font-style: normal;
         }
+        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,500;0,9..40,700&display=swap');
+
+        :root {
+            --ocre:        #D4B483;
+            --ocre-d:      #B8955A;
+            --azul-elec:   #1A5FBF;
+            --azul-barra:  #2F7BD6;
+            --azul-barra-d:#1A5FAA;
+            --rojo:        #CC1414;
+            --rojo-d:      #A50E0E;
+            --rojo-f:      #D73828;
+            --blanco:      #F8F6F2;
+            --crema:       #F0E6D0;
+            --marron:      #2b1a0a;
+            --amarillo:    #FDB740;
+            --verde-wa:    #25D366;
+            --verde-wa-d:  #128C7E;
+            --radius:      10px;
+            --font-display:'Alberdini', 'DM Serif Display', serif;
+            --font-body:   'DM Sans', Arial, sans-serif;
+        }
 
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
-            font-family: 'Arial', sans-serif;
         }
 
         html {
@@ -832,101 +864,118 @@ $days_of_week = [
 
         body {
             overflow-x: hidden;
-            background: #f5f5f5;
+            background: var(--crema);
+            font-family: var(--font-body);
+            color: var(--marron);
+            -webkit-font-smoothing: antialiased;
         }
 
         .nav-menu {
             position: fixed;
-            top: 30px;
+            top: 20px;
             left: 50%;
             transform: translateX(-50%);
-            z-index: 1000;
-            background-color: rgba(255, 255, 255, 0.98);
-            border-radius: 25px;
-            padding: 10px 25px;
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
-            backdrop-filter: blur(8px);
+            z-index: 10000;
+            background: var(--ocre);
+            border: 3px solid var(--azul-elec);
+            border-radius: 4px;
+            padding: 8px 22px;
+            box-shadow: 4px 4px 0 var(--azul-elec);
             display: inline-block;
-            transition: all 0.3s ease;
+            transition: all .2s ease;
         }
 
         .nav-menu ul {
             list-style: none;
             display: flex;
-            gap: 20px;
+            gap: 4px;
             margin: 0;
         }
 
         .nav-menu a {
             text-decoration: none;
-            color: #333;
-            font-size: 15px;
-            font-weight: 600;
-            padding: 8px 15px;
-            border-radius: 20px;
-            transition: all 0.3s ease;
+            color: var(--marron);
+            font-family: var(--font-display);
+            font-size: 21px;
+            font-weight: normal;
+            padding: 6px 14px;
+            border-radius: 2px;
+            letter-spacing: .03em;
+            transition: all .2s ease;
         }
 
         .nav-menu a:hover {
-            background-color: #cc0000;
-            color: white;
-            transform: translateY(-2px);
+            background: var(--rojo);
+            color: #fff;
+            transform: translateY(-1px);
         }
 
         .section {
             width: 100%;
-            padding: 20px;
-            background-color: #FDB740;
-            min-height: auto;
+            padding: 110px 20px 40px;
+            background:
+                repeating-linear-gradient(
+                    45deg,
+                    var(--ocre) 0 22px,
+                    var(--ocre-d) 22px 44px
+                );
+            min-height: 100vh;
         }
 
         .editor-container {
-            max-width: 800px;
+            max-width: 860px;
             margin: 0 auto;
-            background-color: rgba(255, 255, 255, 0.9);
-            border-radius: 15px;
-            padding: 30px;
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+            background: var(--blanco);
+            border: 3px solid var(--azul-elec);
+            border-radius: var(--radius);
+            padding: 34px 30px;
+            box-shadow: 6px 6px 0 var(--azul-elec);
         }
 
         .editor-container h2 {
             text-align: center;
-            font-size: 2rem;
-            margin-bottom: 40px;
-            color: #333;
-            font-family: 'Alberdi', cursive;
-            font-weight: 700;
-            padding-top: 40px;
+            font-size: 2.6rem;
+            margin-bottom: 34px;
+            color: var(--rojo);
+            font-family: var(--font-display);
+            font-weight: normal;
+            letter-spacing: .02em;
+            text-shadow: 2px 2px 0 var(--ocre);
         }
 
         details {
             margin-bottom: 20px;
-            background: rgba(255, 255, 255, 0.9);
-            border-radius: 10px;
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
-            transition: all 0.3s ease;
+            background: var(--crema);
+            border: 2px solid var(--azul-elec);
+            border-radius: var(--radius);
+            box-shadow: 3px 3px 0 var(--azul-barra);
+            transition: all 0.2s ease;
+            overflow: hidden;
         }
 
         details summary {
-            padding: 15px;
-            font-size: 1.5rem;
-            color: #333;
-            font-family: 'Alberdi', cursive;
-            font-weight: 700;
+            padding: 15px 18px;
+            font-size: 1.35rem;
+            color: var(--marron);
+            font-family: var(--font-display);
+            font-weight: normal;
             cursor: pointer;
-            border-bottom: 2px solid #333;
+            border-bottom: 2px solid var(--azul-elec);
             text-transform: uppercase;
             letter-spacing: 1px;
+            list-style: none;
         }
 
+        details summary::-webkit-details-marker { display: none; }
+
         details summary:hover {
-            background-color: #cc0000;
-            color: white;
+            background-color: var(--rojo);
+            color: #fff;
         }
 
         details[open] summary {
-            background-color: #cc0000;
-            color: white;
+            background-color: var(--rojo);
+            color: #fff;
         }
 
         .editor-form {
@@ -942,15 +991,15 @@ $days_of_week = [
         .modal-form select {
             width: 100%;
             max-width: 30%;
-            padding: 12px;
+            padding: 11px 14px;
             margin: 10px 0;
-            border: 2px solid #ddd;
-            border-radius: 25px;
+            border: 2px solid var(--ocre-d);
+            border-radius: 6px;
             font-size: 16px;
-            font-family: 'Arial', sans-serif;
-            color: #555;
+            font-family: var(--font-body);
+            color: var(--marron);
             background: #fff;
-            transition: border-color 0.3s ease;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease;
         }
 
         .editor-form textarea,
@@ -959,15 +1008,15 @@ $days_of_week = [
         .modal-form input[type="url"] {
             width: 100%;
             max-width: 60%;
-            padding: 12px;
+            padding: 11px 14px;
             margin: 10px 0;
-            border: 2px solid #ddd;
-            border-radius: 25px;
+            border: 2px solid var(--ocre-d);
+            border-radius: 6px;
             font-size: 16px;
-            font-family: 'Arial', sans-serif;
-            color: #555;
+            font-family: var(--font-body);
+            color: var(--marron);
             background: #fff;
-            transition: border-color 0.3s ease;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease;
         }
 
         .editor-form input:focus,
@@ -976,8 +1025,9 @@ $days_of_week = [
         .modal-form input:focus,
         .modal-form select:focus,
         .modal-form textarea:focus {
-            border-color: #cc0000;
+            border-color: var(--azul-elec);
             outline: none;
+            box-shadow: 0 0 0 3px rgba(26, 95, 191, 0.18);
         }
 
         .editor-form input[type="file"],
@@ -991,17 +1041,17 @@ $days_of_week = [
         .editor-form label,
         .modal-form label {
             font-size: 1rem;
-            color: #333;
-            font-weight: 600;
+            color: var(--marron);
+            font-weight: 700;
             margin: 10px 5px;
             display: inline-block;
-            font-family: 'Arial', sans-serif;
+            font-family: var(--font-body);
         }
 
         .editor-form p.note,
         .modal-form p.note {
             font-size: 0.9rem;
-            color: #555;
+            color: #6b5a45;
             margin: 5px 0;
         }
 
@@ -1035,36 +1085,37 @@ $days_of_week = [
             width: 40px;
             height: 40px;
             border-radius: 50%;
-            background-color: #e0e0e0;
-            color: #333;
+            background-color: var(--crema);
+            color: var(--marron);
             display: flex;
             align-items: center;
             justify-content: center;
             font-size: 16px;
-            font-weight: 600;
+            font-weight: 700;
             cursor: pointer;
             user-select: none;
-            transition: all 0.3s ease;
-            border: 2px solid transparent;
+            transition: all 0.2s ease;
+            border: 2px solid var(--ocre-d);
         }
 
         .day-toggle.active,
         .option-toggle.active {
-            background-color: #cc0000;
+            background-color: var(--rojo);
             color: white;
-            border-color: #b30000;
+            border-color: var(--rojo-d);
         }
 
         .day-toggle:hover,
         .option-toggle:hover {
-            background-color: #b30000;
+            background-color: var(--rojo-f);
             color: white;
+            border-color: var(--rojo-d);
         }
 
         .day-toggle:focus,
         .option-toggle:focus {
             outline: none;
-            box-shadow: 0 0 0 3px rgba(204, 0, 0, 0.3);
+            box-shadow: 0 0 0 3px rgba(204, 20, 20, 0.3);
         }
 
         .sub-item {
@@ -1089,38 +1140,45 @@ $days_of_week = [
 
         .sub-item label {
             font-size: 0.9rem;
-            color: #333;
-            font-weight: 600;
+            color: var(--marron);
+            font-weight: 700;
             margin: 10px 5px;
         }
 
         .sub-item .required-label {
-            color: #cc0000;
+            color: var(--rojo);
             font-weight: bold;
         }
 
         .editor-form button,
         .modal-form button {
-            background: #cc0000;
+            background: var(--rojo);
             color: white;
-            border: none;
-            padding: 12px 20px;
-            border-radius: 25px;
+            border: 2px solid var(--rojo-d);
+            padding: 12px 24px;
+            border-radius: 6px;
             cursor: pointer;
             font-size: 16px;
-            transition: all 0.3s ease;
-            font-family: 'Arial', sans-serif;
+            font-weight: 700;
+            font-family: var(--font-body);
+            letter-spacing: .02em;
             align-self: flex-start;
             max-width: none;
-            font-weight: 600;
-            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+            box-shadow: 3px 3px 0 var(--rojo-d);
+            transition: all 0.15s ease;
         }
 
         .editor-form button:hover,
         .modal-form button:hover {
-            background: #b30000;
-            transform: translateY(-2px);
-            box-shadow: 0 3px 8px rgba(0, 0, 0, 0.2);
+            background: var(--rojo-f);
+            transform: translate(-1px, -1px);
+            box-shadow: 4px 4px 0 var(--rojo-d);
+        }
+
+        .editor-form button:active,
+        .modal-form button:active {
+            transform: translate(2px, 2px);
+            box-shadow: 1px 1px 0 var(--rojo-d);
         }
 
         .item-grid {
@@ -1131,17 +1189,19 @@ $days_of_week = [
         }
 
         .item-card {
-            background: white;
-            border-radius: 10px;
+            background: #fff;
+            border: 2px solid var(--azul-elec);
+            border-radius: var(--radius);
             overflow: hidden;
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
-            transition: transform 0.3s ease;
+            box-shadow: 3px 3px 0 var(--azul-barra);
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
             cursor: move;
             position: relative;
         }
 
         .item-card:hover {
-            transform: translateY(-5px);
+            transform: translate(-2px, -2px);
+            box-shadow: 5px 5px 0 var(--azul-barra);
         }
 
         .item-card img {
@@ -1152,10 +1212,10 @@ $days_of_week = [
 
         .item-card h3 {
             font-size: 1rem;
-            color: #333;
+            color: var(--marron);
             margin: 10px;
-            font-family: 'Alberdi', cursive;
-            font-weight: 700;
+            font-family: var(--font-display);
+            font-weight: normal;
             text-align: center;
         }
 
@@ -1166,7 +1226,7 @@ $days_of_week = [
             left: 0;
             width: 100%;
             height: 100%;
-            background: rgba(0, 0, 0, 0.5);
+            background: rgba(43, 26, 10, 0.65);
             z-index: 1000;
             justify-content: center;
             align-items: center;
@@ -1174,13 +1234,14 @@ $days_of_week = [
         }
 
         .modal-content {
-            background: white;
-            border-radius: 15px;
-            padding: 20px;
+            background: var(--blanco);
+            border: 3px solid var(--azul-elec);
+            border-radius: var(--radius);
+            padding: 24px;
             max-width: 600px;
             width: 90%;
             position: relative;
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+            box-shadow: 6px 6px 0 var(--azul-elec);
             max-height: 80vh;
             overflow-y: auto;
         }
@@ -1188,14 +1249,15 @@ $days_of_week = [
         .modal-close {
             position: absolute;
             top: 10px;
-            right: 10px;
-            font-size: 1.5rem;
+            right: 14px;
+            font-size: 1.6rem;
             cursor: pointer;
-            color: #333;
+            color: var(--marron);
+            line-height: 1;
         }
 
         .modal-close:hover {
-            color: #cc0000;
+            color: var(--rojo);
         }
 
         .modal-content img {
@@ -1203,7 +1265,7 @@ $days_of_week = [
             height: auto;
             max-height: 200px;
             object-fit: contain;
-            border-radius: 10px;
+            border-radius: 8px;
             margin-bottom: 15px;
             display: block;
         }
@@ -1216,15 +1278,16 @@ $days_of_week = [
         }
 
         .category-item {
-            background: white;
-            border-radius: 10px;
+            background: #fff;
+            border: 2px solid var(--ocre-d);
+            border-radius: var(--radius);
             padding: 20px;
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
-            transition: transform 0.3s ease;
+            box-shadow: 3px 3px 0 var(--ocre-d);
+            transition: transform 0.15s ease;
         }
 
         .category-item:hover {
-            transform: translateY(-5px);
+            transform: translate(-2px, -2px);
         }
 
         .category-item input,
@@ -1233,17 +1296,27 @@ $days_of_week = [
         }
 
         .error {
-            color: #cc0000;
+            color: #fff;
+            background: var(--rojo);
+            border: 2px solid var(--rojo-d);
+            border-radius: 6px;
             font-size: 1rem;
             margin: 10px 0;
+            padding: 10px 14px;
             text-align: center;
+            font-weight: 600;
         }
 
         .success {
-            color: #28a745;
+            color: #fff;
+            background: var(--verde-wa-d);
+            border: 2px solid #0e6e5f;
+            border-radius: 6px;
             font-size: 1rem;
             margin: 10px 0;
+            padding: 10px 14px;
             text-align: center;
+            font-weight: 600;
         }
 
         .hours-table-container {
@@ -1256,10 +1329,14 @@ $days_of_week = [
             border-collapse: collapse;
             margin: 20px 0;
             table-layout: fixed;
+            background: #fff;
+            border: 2px solid var(--azul-elec);
+            border-radius: var(--radius);
+            overflow: hidden;
         }
 
         .hours-table th, .hours-table td {
-            border: 1px solid #ddd;
+            border: 1px solid var(--ocre-d);
             padding: 6px;
             text-align: left;
             font-size: 13px;
@@ -1267,8 +1344,11 @@ $days_of_week = [
         }
 
         .hours-table th {
-            background-color: #cc0000;
+            background-color: var(--azul-elec);
             color: white;
+            font-family: var(--font-display);
+            font-weight: normal;
+            letter-spacing: .03em;
         }
 
         .hours-table td form {
@@ -1281,7 +1361,7 @@ $days_of_week = [
         .hours-table select, .hours-table input[type="time"] {
             padding: 5px;
             border-radius: 5px;
-            border: 1px solid #ddd;
+            border: 1px solid var(--ocre-d);
             font-size: 12px;
             max-width: 100px;
         }
@@ -1291,24 +1371,25 @@ $days_of_week = [
             font-size: 11px;
         }
 
-        /* Nuevos estilos para el campo de texto destacado */
+        /* Campo de texto destacado (pizza de la semana) */
         .weekly-special-text {
             width: 100%;
             max-width: 60%;
-            padding: 12px;
+            padding: 11px 14px;
             margin: 10px 0;
-            border: 2px solid #ddd;
-            border-radius: 25px;
+            border: 2px solid var(--ocre-d);
+            border-radius: 6px;
             font-size: 16px;
-            font-family: 'Arial', sans-serif;
-            color: #555;
+            font-family: var(--font-body);
+            color: var(--marron);
             background: #fff;
-            transition: border-color 0.3s ease;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease;
         }
 
         .weekly-special-text:focus {
-            border-color: #cc0000;
+            border-color: var(--azul-elec);
             outline: none;
+            box-shadow: 0 0 0 3px rgba(26, 95, 191, 0.18);
         }
 
         @media (max-width: 768px) {
@@ -1505,20 +1586,22 @@ $days_of_week = [
             }
         }
         .btn-add-schedule {
-            background: #e8f5e9;
-            color: #2e7d32;
-            border: 1.5px dashed #66bb6a;
+            background: var(--crema);
+            color: var(--azul-elec);
+            border: 1.5px dashed var(--azul-elec);
             padding: 7px 18px;
-            border-radius: 20px;
+            border-radius: 6px;
             cursor: pointer;
             font-size: 0.9rem;
-            font-weight: 600;
+            font-weight: 700;
+            font-family: var(--font-body);
             transition: all 0.2s ease;
             margin-top: 4px;
         }
         .btn-add-schedule:hover {
-            background: #c8e6c9;
-            border-color: #388e3c;
+            background: var(--azul-elec);
+            color: #fff;
+            border-style: solid;
         }
     </style>
 </head>
