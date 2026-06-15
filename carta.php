@@ -18,33 +18,60 @@ $day_map = array(
 $current_day_es = isset($day_map[$current_day]) ? $day_map[$current_day] : 'Lunes';
 
 
-$visibilityWhere = "
-    AND (
-        mi.visible_days IS NULL 
-        OR mi.visible_days = '[]' 
-        OR JSON_CONTAINS(mi.visible_days, ?)
-    )
-    AND (
-        (mi.visible_start_time IS NULL AND mi.visible_end_time IS NULL)
-        OR (
-            mi.visible_start_time <= mi.visible_end_time
-            AND mi.visible_start_time <= ?
-            AND mi.visible_end_time   >= ?
-        )
-        OR (
-            mi.visible_start_time > mi.visible_end_time
-            AND (
-                mi.visible_start_time <= ?
-                OR  mi.visible_end_time >= ?
-            )
-        )
-    )
-";
-$visParams = [
-    json_encode($current_day_es),
-    $current_time, $current_time,
-    $current_time, $current_time
-];
+// ---- Helper: verificar si un ítem es visible ahora según sus franjas ----
+// Soporta el formato nuevo (array de objetos {days,start,end} en visible_days)
+// y el legado (array plano de días + visible_start_time/visible_end_time).
+if (!function_exists('isItemVisibleNow')) {
+function isItemVisibleNow(array $item, string $currentDayEs, string $currentTime): bool {
+    $json = $item['visible_days'] ?? null;
+
+    // Sin restricción de días → siempre visible (revisa horario legado si existe)
+    if (!$json || $json === '[]' || $json === 'null') {
+        $start = $item['visible_start_time'] ?? null;
+        $end   = $item['visible_end_time']   ?? null;
+        if (!$start && !$end) return true;
+        if ($start && $end) {
+            if ($start <= $end) return $currentTime >= $start && $currentTime <= $end;
+            return $currentTime >= $start || $currentTime <= $end;
+        }
+        return true;
+    }
+
+    $decoded = json_decode($json, true);
+    if (!is_array($decoded) || empty($decoded)) return true;
+
+    // Formato nuevo: array de objetos con clave 'start'
+    if (isset($decoded[0]['start'])) {
+        foreach ($decoded as $franja) {
+            $days  = $franja['days']  ?? [];
+            $start = $franja['start'] ?? '';
+            $end   = $franja['end']   ?? '';
+            if (!in_array($currentDayEs, $days, true)) continue;
+            if ($start === '' && $end === '') return true;
+            if ($start !== '' && $end !== '') {
+                if ($start <= $end) {
+                    if ($currentTime >= $start && $currentTime <= $end) return true;
+                } else {
+                    if ($currentTime >= $start || $currentTime <= $end) return true;
+                }
+            } else {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Formato legado: array plano de días
+    if (!in_array($currentDayEs, $decoded, true)) return false;
+    $start = $item['visible_start_time'] ?? null;
+    $end   = $item['visible_end_time']   ?? null;
+    if (!$start && !$end) return true;
+    if ($start && $end) {
+        if ($start <= $end) return $currentTime >= $start && $currentTime <= $end;
+        return $currentTime >= $start || $currentTime <= $end;
+    }
+    return true;
+}}
 /**
  * Agrupa por **segmento** (cada "HH:MM - HH:MM") y además
  * **fusiona los cruces de medianoche**:
@@ -268,6 +295,31 @@ try {
     $categories = [];
 }
 
+// Pre-fetch de ítems por categoría aplicando filtros de día/hora en PHP.
+// Misma fuente para el submenú y para la sección, así una categoría sin
+// ítems disponibles ahora se oculta consistentemente en ambos lugares.
+$items_by_category = [];
+try {
+    $items_stmt = $pdo->prepare("
+        SELECT mi.*
+        FROM menu_items mi
+        WHERE mi.category_id = ?
+          AND mi.is_visible = 1
+        ORDER BY mi.display_order
+    ");
+    foreach ($categories as $category) {
+        $items_stmt->execute([$category['id']]);
+        $all_items = $items_stmt->fetchAll(PDO::FETCH_ASSOC);
+        $items_by_category[$category['id']] = array_values(array_filter(
+            $all_items,
+            fn($it) => isItemVisibleNow($it, $current_day_es, $current_time)
+        ));
+    }
+} catch (PDOException $e) {
+    error_log("Error pre-fetching items por categoría: " . $e->getMessage());
+    $items_by_category = [];
+}
+
 
 
 // Fetch sub-products
@@ -295,40 +347,18 @@ try {
 $eligible_items = [];
 try {
     $stmt = $pdo->prepare("
-        SELECT mi.id, mi.name, mi.price 
+        SELECT mi.id, mi.name, mi.price, mi.visible_days, mi.visible_start_time, mi.visible_end_time
         FROM menu_items mi 
         WHERE mi.is_visible = 1 
         AND mi.category_id = (SELECT id FROM categories WHERE name = 'Pizzas' LIMIT 1)
-        AND (
-            mi.visible_days IS NULL 
-            OR mi.visible_days = '[]' 
-            OR JSON_CONTAINS(mi.visible_days, ?)
-        )
-        AND (
-            (mi.visible_start_time IS NULL AND mi.visible_end_time IS NULL)
-            OR (
-                mi.visible_start_time <= mi.visible_end_time
-                AND mi.visible_start_time <= ? 
-                AND mi.visible_end_time >= ?
-            )
-            OR (
-                mi.visible_start_time > mi.visible_end_time
-                AND (
-                    mi.visible_start_time <= ?
-                    OR mi.visible_end_time >= ?
-                )
-            )
-        )
         ORDER BY mi.name
     ");
-    $stmt->execute([
-        json_encode($current_day_es),
-        $current_time,
-        $current_time,
-        $current_time,
-        $current_time
-    ]);
-    $eligible_items = $stmt->fetchAll();
+    $stmt->execute();
+    $all_eligible = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $eligible_items = array_values(array_filter(
+        $all_eligible,
+        fn($it) => isItemVisibleNow($it, $current_day_es, $current_time)
+    ));
 } catch (PDOException $e) {
     $eligible_items = [];
 }
@@ -427,20 +457,7 @@ try {
                 <ul>
                     <?php foreach ($categories as $category): ?>
                         <?php
-                        try {
-                            $stmt = $pdo->prepare("
-                                SELECT COUNT(*) as count 
-                                FROM menu_items mi 
-                                WHERE mi.category_id = ? 
-                                AND mi.is_visible = 1 
-                                " . $visibilityWhere . "
-                            ");
-                            $stmt->execute(array_merge([$category['id']], $visParams));
-                            $item_count = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
-                        } catch (PDOException $e) {
-                            error_log("Error en consulta de conteo de ítems: " . $e->getMessage());
-                            $item_count = 0;
-                        }
+                        $item_count = count($items_by_category[$category['id']] ?? []);
                         if ($item_count > 0):
                         ?>
                             <li class="<?php if ($category['name'] == 'Carta Secreta') echo 'secret-link'; ?>">
@@ -457,21 +474,7 @@ try {
 
             <?php foreach ($categories as $category): ?>
                 <?php
-                try {
-                    $stmt = $pdo->prepare("
-                        SELECT mi.* 
-                        FROM menu_items mi 
-                        WHERE mi.category_id = ? 
-                          AND mi.is_visible = 1 
-                          " . $visibilityWhere . " 
-                        ORDER BY mi.display_order
-                    ");
-                    $stmt->execute(array_merge([$category['id']], $visParams));
-                    $items = $stmt->fetchAll(PDO::FETCH_ASSOC);
-                } catch (PDOException $e) {
-                    error_log("Error en consulta de ítems de menú: " . $e->getMessage());
-                    $items = [];
-                }
+                $items = $items_by_category[$category['id']] ?? [];
                 if (count($items) > 0):
                 ?>
                     <div id="category-<?php echo $category['id']; ?>" class="category-section <?php if ($category['name'] == 'Carta Secreta') echo 'secret-category'; ?>">
