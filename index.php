@@ -634,7 +634,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
             <div class="nosotros-text">
                 <h2>Que hacemos?</h2>
-                <p>Hacemos pizzas estilo napolitano en un sentido muy amplio del término. Nuestros castigadisimos hornitos eléctricos tuneados nos permiten hacer un estilo propio de inspiración napolitana pero de pizzas auténticas y originales. Somos obsesivos en la búsqueda de los mejores ingredientes y tratamos siempre de usar materias primas locales de la provincia de Córdoba, porque realmente creemos que es importante darle valor a las maravillas que crecen en nuestra tierra. Cada semana proponemos una nueva pizza y estamos constantemente en la búsqueda de mejorar nuestra propuesta con una profunda atención al detalle.</p>
+                <p>Hacemos pizzas estilo napolitano en un sentido muy amplio del término. Nuestros castigadisimos hornitos eléctricos tuneados nos permiten hacer un estilo propio de inspiración napolitana pero de pizzas auténticas y originales. Somos obsesivos en la búsqueda de los mejores ingredientes y tratamos siempre de usar materias primas locales de la provincia de Córdoba, porque realmente creemos que es importante darle valor a las maravillas que crecen en nuestra tierra. Cada semana proponemos una nueva pizza y estamos constantemente en la búsqueda de mejorar nuestra propuesta con una profunda atención al detalle.<br /> <br /></p>
             </div>
         </section>
 
