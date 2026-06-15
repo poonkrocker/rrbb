@@ -633,8 +633,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 </div>
 
             <div class="nosotros-text">
-                <h2>Nuestra Historia</h2>
-                <p>Arrabbiata nació en 2022 con una idea clara: hacer pizzas con estilo napolitano jerarquizando los ingredientes de la provincia de Córdoba. Nuestro objetivo es mejorar siempre la propuesta para nuestros clientes, ofreciendo la mejor calidad de la provincia y permitiendonos jugar con los sabores en nuestra "pizza de la semana". Los esperamos de jueves a sabados de 20 a 00 hs para probar las mejores pizzas del barrio Alberdi, y de lunes a viernes de 12 a 15 hs con nuestras pizzas y también nuestros maravillosos panchitos con salchicha alemana ahumada. Estamos en el corazón de Alberdi, Córdoba Capital.</p>
+                <h2>Que hacemos?</h2>
+                <p>Hacemos pizzas estilo napolitano en un sentido muy amplio del término. Nuestros castigadisimos hornitos eléctricos tuneados nos permiten hacer un estilo propio de inspiración napolitana pero de pizzas auténticas y originales. Somos obsesivos en la búsqueda de los mejores ingredientes y tratamos siempre de usar materias primas locales de la provincia de Córdoba, porque realmente creemos que es importante darle valor a las maravillas que crecen en nuestra tierra. Cada semana proponemos una nueva pizza y estamos constantemente en la búsqueda de mejorar nuestra propuesta con una profunda atención al detalle.</p>
             </div>
         </section>
 
