@@ -9,16 +9,20 @@
  *   - $item         (array)  producto actual
  *   - $is_open      (bool)   si el local está abierto
  *   - $sub_products (array)  subproductos por item_id
+ *   - $variants_by_item (array) variantes con precio propio por item_id
  */
+$__variants = $variants_by_item[$item['id']] ?? [];
+$__has_variants = !empty($__variants);
 ?>
-<div class="pizza-item <?php echo !$is_open ? 'disabled' : ''; ?> <?php echo $item['is_secret_menu'] ? 'secret-item' : ''; ?>"
+<div class="pizza-item <?php echo !$is_open ? 'disabled' : ''; ?> <?php echo $item['is_secret_menu'] ? 'secret-item' : ''; ?> <?php echo $__has_variants ? 'has-variants' : ''; ?>"
      data-item-id="<?php echo $item['id']; ?>"
      data-item-name="<?php echo htmlspecialchars($item['name']); ?>"
      data-item-price="<?php echo $item['price']; ?>"
      data-has-vegan="<?php echo $item['has_vegan_option'] ? 'true' : 'false'; ?>"
      data-has-subproducts="<?php echo !empty($sub_products[$item['id']]) ? 'true' : 'false'; ?>"
+     data-has-variants="<?php echo $__has_variants ? 'true' : 'false'; ?>"
      data-required-selections="<?php echo $item['required_selections'] ?: '0'; ?>"
-     <?php if (!$item['requires_pizza'] && $is_open): ?>
+     <?php if (!$item['requires_pizza'] && !$__has_variants && $is_open): ?>
          onclick="addItemToCart('<?php echo htmlspecialchars($item['name']); ?>', '<?php echo $item['id']; ?>', <?php echo $item['price']; ?>, false, <?php echo !empty($sub_products[$item['id']]) ? 'true' : 'false'; ?>, <?php echo $item['required_selections'] ?: '0'; ?>)"
      <?php endif; ?>>
 
@@ -48,12 +52,47 @@
         <p class="item-desc">
             <?php echo nl2br(htmlspecialchars($item['description'])); ?>
         </p>
+        <?php if ($__has_variants): ?>
+            <?php
+                // Variante por defecto: la primera (menor display_order).
+                $__default = $__variants[0];
+                // Pasamos las variantes a JS por la tarjeta, para no recalcular.
+                $__variants_json = htmlspecialchars(
+                    json_encode($__variants, JSON_UNESCAPED_UNICODE),
+                    ENT_QUOTES
+                );
+            ?>
+            <div class="variant-picker" data-variants="<?php echo $__variants_json; ?>">
+                <div class="variant-pills">
+                    <?php foreach ($__variants as $__i => $__v): ?>
+                        <button type="button"
+                                class="variant-pill <?php echo $__i === 0 ? 'active' : ''; ?>"
+                                data-variant-id="<?php echo $__v['id']; ?>"
+                                data-variant-name="<?php echo htmlspecialchars($__v['name']); ?>"
+                                data-variant-price="<?php echo $__v['price']; ?>"
+                                data-variant-desc="<?php echo htmlspecialchars($__v['description'] ?? ''); ?>"
+                                onclick="event.stopPropagation(); selectVariant(this);">
+                            <?php echo htmlspecialchars($__v['name']); ?>
+                        </button>
+                    <?php endforeach; ?>
+                </div>
+                <p class="variant-desc"><?php echo htmlspecialchars($__default['description'] ?? ''); ?></p>
+                <div class="price-container">
+                    <p>$<span class="item-price variant-current-price" data-price="<?php echo $__default['price']; ?>"><?php echo number_format($__default['price'], 2); ?></span></p>
+                    <button class="add-variant-button"
+                            <?php if ($is_open): ?>
+                            onclick="event.stopPropagation(); addSelectedVariantToCart(this);"
+                            <?php else: ?>disabled<?php endif; ?>>Agregar</button>
+                </div>
+            </div>
+        <?php else: ?>
         <div class="price-container">
             <p>$<span class="item-price" data-price="<?php echo $item['price']; ?>"><?php echo number_format($item['price'], 2); ?></span></p>
             <?php if ($item['has_vegan_option']): ?>
                 <button class="vegan-button" data-item-id="<?php echo $item['id']; ?>" <?php if ($is_open): ?>onclick="event.stopPropagation(); addItemToCart('<?php echo htmlspecialchars($item['name']); ?>', '<?php echo $item['id']; ?>', <?php echo $item['price']; ?>, true, <?php echo !empty($sub_products[$item['id']]) ? 'true' : 'false'; ?>, <?php echo $item['required_selections'] ?: '0'; ?>)"<?php endif; ?>>🌿 Versión Vegana</button>
             <?php endif; ?>
         </div>
+        <?php endif; ?>
     <?php endif; ?>
 
     <?php if (!empty($sub_products[$item['id']])): ?>
