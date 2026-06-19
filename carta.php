@@ -291,6 +291,9 @@ try {
     $sub_products = [];
 }
 
+// Variantes con precio propio (Muzza / Fugazzeta / Arrabbiata, etc.)
+require_once '_variants_data.php';
+
 // Fetch eligible items (visible pizzas)
 $eligible_items = [];
 try {
@@ -538,7 +541,7 @@ try {
             }
         }
 
-        function addToCart(name, price, itemId, isVegan, selectedSubproducts = [], dependentPizza = null) {
+        function addToCart(name, price, itemId, isVegan, selectedSubproducts = [], dependentPizza = null, variantId = null) {
             if (!isOpen) {
                 alert('Lo sentimos, estamos cerrados en este momento.');
                 return;
@@ -546,6 +549,7 @@ try {
             const cart = JSON.parse(localStorage.getItem('cart')) || [];
             const item = {
                 id: itemId,
+                variantId: variantId,
                 name: name,
                 price: price,
                 quantity: 1,
@@ -556,6 +560,7 @@ try {
             
             const existingItem = cart.find(cartItem => 
                 cartItem.id === itemId && 
+                (cartItem.variantId ?? null) === (variantId ?? null) &&
                 cartItem.isVegan === isVegan && 
                 JSON.stringify(cartItem.subproducts) === JSON.stringify(selectedSubproducts) &&
                 JSON.stringify(cartItem.dependentPizza) === JSON.stringify(dependentPizza)
@@ -570,6 +575,38 @@ try {
             updateCartUI();
             showCartButton();
         }
+
+        // ====== VARIANTES con precio propio ======
+        function selectVariant(pill) {
+            const picker = pill.closest('.variant-picker');
+            picker.querySelectorAll('.variant-pill').forEach(p => p.classList.remove('active'));
+            pill.classList.add('active');
+            const price = parseFloat(pill.dataset.variantPrice);
+            const desc  = pill.dataset.variantDesc || '';
+            const priceEl = picker.querySelector('.variant-current-price');
+            priceEl.dataset.price = price;
+            priceEl.textContent = price.toLocaleString('es-AR', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            const descEl = picker.querySelector('.variant-desc');
+            if (descEl) descEl.textContent = desc;
+        }
+
+        function addSelectedVariantToCart(btn) {
+            if (!isOpen) {
+                alert('Lo sentimos, estamos cerrados en este momento.');
+                return;
+            }
+            const card   = btn.closest('.pizza-item');
+            const picker  = btn.closest('.variant-picker');
+            const active = picker.querySelector('.variant-pill.active') || picker.querySelector('.variant-pill');
+            if (!active) return;
+            const itemId    = card.dataset.itemId;
+            const baseName  = card.dataset.itemName;
+            const variantId = 'v' + active.dataset.variantId;
+            const vName     = active.dataset.variantName;
+            const vPrice    = parseFloat(active.dataset.variantPrice);
+            addToCart(`${baseName} — ${vName}`, vPrice, itemId, false, [], null, variantId);
+        }
+
 
         function updateCartUI() {
             const cart = JSON.parse(localStorage.getItem('cart')) || [];
