@@ -71,6 +71,14 @@ try {
         LIMIT 1
     ");
 
+    // Para líneas con variante: traemos el precio REAL de la variante.
+    $variant_stmt = $pdo->prepare("
+        SELECT id, item_id, name, price
+        FROM menu_item_variants
+        WHERE id = ? AND item_id = ?
+        LIMIT 1
+    ");
+
     foreach ($items as $line) {
         $id  = (int)($line['id'] ?? 0);
         $qty = (int)($line['quantity'] ?? 0);
@@ -82,17 +90,31 @@ try {
 
         if ((int)$row['is_visible'] !== 1) fail('Un producto ya no está disponible.');
         if (stripos($row['cat_name'], 'Tienda') === false) fail('Producto no válido para la tienda.');
-        if ($row['secondary_price'] !== null && (float)$row['secondary_price'] <= 0) {
-            fail('Un producto está agotado: ' . $row['name']);
+
+        // ¿La línea trae una variante? El front la manda como "v<ID>".
+        $rawVariant = (string)($line['variantId'] ?? '');
+        if ($rawVariant !== '') {
+            $variantId = (int)ltrim($rawVariant, 'v');
+            $variant_stmt->execute([$variantId, $id]);
+            $vrow = $variant_stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$vrow) fail('Una variante del carrito ya no existe.');
+
+            $price = (float)$vrow['price'];            // precio REAL de la variante
+            $title = $row['name'] . ' — ' . $vrow['name'];
+        } else {
+            if ($row['secondary_price'] !== null && (float)$row['secondary_price'] <= 0) {
+                fail('Un producto está agotado: ' . $row['name']);
+            }
+            $price = (float)$row['price'];             // precio REAL desde la BD
+            $title = $row['name'];
         }
 
-        $price = (float)$row['price'];          // precio REAL desde la BD
         $lineTotal = $price * $qty;
         $total += $lineTotal;
 
         $validated[] = [
             'id'          => (string)$row['id'],
-            'title'       => $row['name'],
+            'title'       => $title,
             'quantity'    => $qty,
             'unit_price'  => round($price, 2),
             'currency_id' => 'ARS',
