@@ -407,6 +407,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
             $item_id = $pdo->lastInsertId();
 
+            // Variantes con precio propio (Muzza / Fugazzeta / etc.)
+            if (!empty($_POST['variant_names']) && is_array($_POST['variant_names'])) {
+                $vstmt = $pdo->prepare("INSERT INTO menu_item_variants (item_id, name, description, price, display_order) VALUES (?, ?, ?, ?, ?)");
+                foreach ($_POST['variant_names'] as $vi => $vname) {
+                    $vname  = trim((string)$vname);
+                    $vprice = isset($_POST['variant_prices'][$vi]) ? (float)$_POST['variant_prices'][$vi] : 0;
+                    $vdesc  = trim((string)($_POST['variant_descriptions'][$vi] ?? ''));
+                    if ($vname === '' || $vprice <= 0) continue;
+                    $vstmt->execute([$item_id, $vname, ($vdesc !== '' ? $vdesc : null), $vprice, $vi]);
+                }
+            }
+
             if (!empty($_POST['sub_item_ids']) && !empty($_POST['sub_item_quantities'])) {
                 $stmt = $pdo->prepare("INSERT INTO menu_item_subproducts (parent_item_id, sub_item_id, quantity, is_required) VALUES (?, ?, ?, ?)");
                 foreach ($_POST['sub_item_ids'] as $index => $sub_item_id) {
@@ -424,6 +436,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $id = (int)$_POST['id'];
             $stmt = $pdo->prepare("DELETE FROM menu_item_subproducts WHERE parent_item_id = ?");
             $stmt->execute([$id]);
+            $pdo->prepare("DELETE FROM menu_item_variants WHERE item_id = ?")->execute([$id]);
             $stmt = $pdo->prepare("DELETE FROM menu_items WHERE id = ?");
             $stmt->execute([$id]);
             $success[] = "Producto eliminado correctamente.";
@@ -516,6 +529,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     }
                 }
             }
+
+            // Variantes con precio propio: borrar y reinsertar (mismo patrón que subproducts).
+            $pdo->prepare("DELETE FROM menu_item_variants WHERE item_id = ?")->execute([$id]);
+            if (!empty($_POST['variant_names']) && is_array($_POST['variant_names'])) {
+                $vstmt = $pdo->prepare("INSERT INTO menu_item_variants (item_id, name, description, price, display_order) VALUES (?, ?, ?, ?, ?)");
+                foreach ($_POST['variant_names'] as $vi => $vname) {
+                    $vname  = trim((string)$vname);
+                    $vprice = isset($_POST['variant_prices'][$vi]) ? (float)$_POST['variant_prices'][$vi] : 0;
+                    $vdesc  = trim((string)($_POST['variant_descriptions'][$vi] ?? ''));
+                    if ($vname === '' || $vprice <= 0) continue;
+                    $vstmt->execute([$id, $vname, ($vdesc !== '' ? $vdesc : null), $vprice, $vi]);
+                }
+            }
+
 
             $success[] = "Producto actualizado correctamente.";
         } elseif ($_POST['action'] === 'add_category') {
@@ -715,6 +742,23 @@ if (!empty($menu_items)) {
     $stmt->execute($ids);
     foreach ($stmt->fetchAll() as $row) {
         $sub_products[$row['parent_item_id']][] = $row;
+    }
+}
+
+// Fetch variantes con precio propio por item — para precargar el form de edición.
+$variants = [];
+if (!empty($menu_items)) {
+    $ids = array_column($menu_items, 'id');
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+    $stmt = $pdo->prepare("
+        SELECT id, item_id, name, description, price
+        FROM menu_item_variants
+        WHERE item_id IN ($placeholders)
+        ORDER BY item_id, display_order, id
+    ");
+    $stmt->execute($ids);
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        $variants[$row['item_id']][] = $row;
     }
 }
 
@@ -2047,6 +2091,12 @@ $days_of_week = [
                             </div>
                             <button type="button" onclick="addSubItem('sub-items-add')">Agregar otro sub-producto</button>
                         </div>
+                        <div class="variants-inputs" style="margin:12px 0;padding:12px;border:1px dashed #aaa;border-radius:8px;">
+                            <label style="font-weight:700;display:block;margin-bottom:6px;">Variantes con precio propio (opcional):</label>
+                            <p style="font-size:.85rem;color:#666;margin:0 0 8px;">Ej. "Pizza Porteña por porción" → Muzza, Fugazzeta, Arrabbiata. Si cargás variantes, el cliente elige una y se cobra su precio.</p>
+                            <div id="variants-add"></div>
+                            <button type="button" onclick="addVariantRow('variants-add')">+ Agregar variante</button>
+                        </div>
                         <input type="number" name="display_order" placeholder="Orden de Visualización" value="0" required>
                         <button type="submit">Agregar Producto</button>
                     </form>
@@ -2250,6 +2300,27 @@ $days_of_week = [
             }
         }
 
+        // ── Variantes con precio propio ───────────────────────────────────
+        function escAttr(s) {
+            return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        }
+        function variantRowHtml(name = '', price = '', desc = '') {
+            return `
+                <div class="variant-row" style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap;align-items:center;">
+                    <input type="text"   name="variant_names[]"        placeholder="Nombre (Muzza)"      value="${escAttr(name)}"  style="flex:1;min-width:120px;">
+                    <input type="number" name="variant_prices[]"  step="0.01" min="0.01" placeholder="Precio" value="${escAttr(price)}" style="width:100px;">
+                    <input type="text"   name="variant_descriptions[]" placeholder="Descripción (opcional)" value="${escAttr(desc)}" style="flex:2;min-width:140px;">
+                    <button type="button" onclick="this.parentElement.remove()">Eliminar</button>
+                </div>`;
+        }
+        function addVariantRow(containerId) {
+            const container = document.getElementById(containerId);
+            if (!container) return;
+            const div = document.createElement('div');
+            div.innerHTML = variantRowHtml();
+            container.appendChild(div.firstElementChild);
+        }
+
         // Client-side Form Validation
         function validateItemForm(form) {
             const name = form.querySelector('input[name="name"]').value.trim();
@@ -2387,6 +2458,7 @@ $days_of_week = [
             const modalContent = document.getElementById('modal-form-content');
             const item = <?php echo json_encode($menu_items); ?>.find(i => i.id == itemId);
             const subProducts = <?php echo json_encode($sub_products); ?>[itemId] || [];
+            const itemVariants = <?php echo json_encode($variants); ?>[itemId] || [];
 
             if (item) {
                 modalContent.innerHTML = `
@@ -2504,6 +2576,14 @@ $days_of_week = [
                                 </div>
                             </div>
                             <button type="button" onclick="addSubItem('sub-items-${item.id}')">Agregar otro sub-producto</button>
+                        </div>
+                        <div class="variants-inputs" style="margin:12px 0;padding:12px;border:1px dashed #aaa;border-radius:8px;">
+                            <label style="font-weight:700;display:block;margin-bottom:6px;">Variantes con precio propio (opcional):</label>
+                            <p style="font-size:.85rem;color:#666;margin:0 0 8px;">Ej. Muzza / Fugazzeta / Arrabbiata, cada una con su precio.</p>
+                            <div id="variants-${item.id}">
+                                ${itemVariants.map(v => variantRowHtml(v.name, v.price, v.description || '')).join('')}
+                            </div>
+                            <button type="button" onclick="addVariantRow('variants-${item.id}')">+ Agregar variante</button>
                         </div>
                         <input type="number" name="display_order" value="${item.display_order}" required>
                         <button type="submit">Actualizar</button>
