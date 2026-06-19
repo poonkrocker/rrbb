@@ -775,3 +775,45 @@ html {
   outline: none;
   border-color: var(--rojo);
 }
+
+/* ============================================================
+   Variantes de producto con precio propio (Muzza / Fugazzeta…)
+   ============================================================ */
+.variant-picker { margin-top: 8px; }
+
+.variant-pills {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin-bottom: 8px;
+}
+.variant-pill {
+  background: none;
+  border: 1.5px solid var(--azul-elec);
+  color: var(--azul-elec);
+  font-family: var(--font-body);
+  font-size: .8rem; font-weight: 600;
+  padding: 4px 12px; border-radius: 20px;
+  cursor: pointer; transition: all .15s;
+}
+.variant-pill:hover { background: rgba(26,95,191,.1); }
+.variant-pill.active {
+  background: var(--azul-elec);
+  color: #fff;
+  box-shadow: 2px 2px 0 var(--azul-barra-d);
+}
+.variant-desc {
+  font-size: .82rem; color: var(--marron);
+  opacity: .8; min-height: 1.1em; margin: 0 0 8px;
+}
+.add-variant-button {
+  background: var(--rojo);
+  border: none; color: #fff;
+  font-family: var(--font-body); font-weight: 700;
+  font-size: .85rem; padding: 6px 16px;
+  border-radius: 20px; cursor: pointer;
+  transition: background .15s;
+}
+.add-variant-button:hover { background: var(--rojo-d); }
+.add-variant-button:disabled { background: var(--gris-piso); cursor: not-allowed; }
+
+/* La tarjeta con variantes no es clickeable como bloque */
+.pizza-item.has-variants { cursor: default; }
