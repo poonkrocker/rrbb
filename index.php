@@ -358,6 +358,9 @@ try {
     $sub_products = [];
 }
 
+// Variantes con precio propio (Muzza / Fugazzeta / Arrabbiata, etc.)
+require_once '_variants_data.php';
+
 // Fetch eligible items (visible pizzas)
 $eligible_items = [];
 try {
@@ -847,8 +850,8 @@ function normalizePay(str){
             }
         }
 
-        function addToCart(name, price, itemId, isVegan, selectedSubproducts = [], pizzaSelection = null) {
-            console.log('addToCart:', {name, price, itemId, isVegan, selectedSubproducts, pizzaSelection});
+        function addToCart(name, price, itemId, isVegan, selectedSubproducts = [], pizzaSelection = null, variantId = null) {
+            console.log('addToCart:', {name, price, itemId, isVegan, selectedSubproducts, pizzaSelection, variantId});
             const cart = JSON.parse(localStorage.getItem('cart')) || [];
             let displayName = name;
             let totalPrice = price;
@@ -860,6 +863,7 @@ function normalizePay(str){
 
             const item = {
                 id: itemId,
+                variantId: variantId,
                 name: displayName,
                 price: totalPrice,
                 quantity: 1,
@@ -870,6 +874,7 @@ function normalizePay(str){
 
             const existingItem = cart.find(cartItem =>
                 cartItem.id === itemId &&
+                (cartItem.variantId ?? null) === (variantId ?? null) &&
                 cartItem.isVegan === isVegan &&
                 JSON.stringify(cartItem.subproducts) === JSON.stringify(selectedSubproducts) &&
                 JSON.stringify(cartItem.pizzaSelection) === JSON.stringify(pizzaSelection)
@@ -884,6 +889,45 @@ function normalizePay(str){
             updateCartUI();
             showCartButton();
         }
+
+        // ====== VARIANTES con precio propio ======
+        // Marca la pill elegida y actualiza precio + descripción visibles.
+        function selectVariant(pill) {
+            const picker = pill.closest('.variant-picker');
+            picker.querySelectorAll('.variant-pill').forEach(p => p.classList.remove('active'));
+            pill.classList.add('active');
+
+            const price = parseFloat(pill.dataset.variantPrice);
+            const desc  = pill.dataset.variantDesc || '';
+
+            const priceEl = picker.querySelector('.variant-current-price');
+            priceEl.dataset.price = price;
+            priceEl.textContent = price.toLocaleString('es-AR', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+
+            const descEl = picker.querySelector('.variant-desc');
+            if (descEl) descEl.textContent = desc;
+        }
+
+        // Agrega al carrito la variante actualmente seleccionada en la tarjeta.
+        function addSelectedVariantToCart(btn) {
+            if (!isOpen) {
+                alert('Lo sentimos, estamos cerrados en este momento.');
+                return;
+            }
+            const card   = btn.closest('.pizza-item');
+            const picker = btn.closest('.variant-picker');
+            const active = picker.querySelector('.variant-pill.active') || picker.querySelector('.variant-pill');
+            if (!active) return;
+
+            const itemId    = card.dataset.itemId;
+            const baseName  = card.dataset.itemName;
+            const variantId = 'v' + active.dataset.variantId; // prefijo para no chocar con ids de item
+            const vName     = active.dataset.variantName;
+            const vPrice    = parseFloat(active.dataset.variantPrice);
+
+            addToCart(`${baseName} — ${vName}`, vPrice, itemId, false, [], null, variantId);
+        }
+
 
 function normalizePay(str){
   return (str || '')
