@@ -1,0 +1,33 @@
+# Credenciales y configuración sensible
+config.php
+*/config.php
+.env
+.env.*
+
+# Uploads y caché dinámica
+Uploads/
+cache_google_reviews.json
+
+# Copias viejas, backups y temporales
+*-old.*
+*_old.*
+*-old-*.*
+*.BKP*
+*.bak
+*.sql
+*.zip
+*.tar.gz
+*.lk
+*.tmp
+*.log
+error_log.txt
+
+# Scripts de diagnóstico o prueba
+info.php
+genhash.php
+diag*.php
+test.php
+
+# Sistema operativo
+.DS_Store
+Thumbs.db

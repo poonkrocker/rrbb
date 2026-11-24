@@ -21,6 +21,36 @@ $errors = [];
 $success = [];
 
 
+// ── Ajustes del sitio (site_settings): datos de transferencia editables ──
+// Tabla clave/valor liviana; se crea sola la primera vez y se siembra con los
+// valores actuales para no romper nada si todavía no existía.
+if (!function_exists('ensureSiteSettings')) {
+function ensureSiteSettings(PDO $pdo): void {
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS site_settings (
+            setting_key   VARCHAR(64) PRIMARY KEY,
+            setting_value TEXT NOT NULL,
+            updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ");
+    $seed = $pdo->prepare("INSERT IGNORE INTO site_settings (setting_key, setting_value) VALUES (?, ?)");
+    $seed->execute(['transfer_alias',  'RRBBPIZZA']);
+    $seed->execute(['transfer_holder', 'Ezequiel Urquidi']);
+}}
+if (!function_exists('getSetting')) {
+function getSetting(PDO $pdo, string $key, string $default = ''): string {
+    try {
+        $st = $pdo->prepare("SELECT setting_value FROM site_settings WHERE setting_key = ?");
+        $st->execute([$key]);
+        $v = $st->fetchColumn();
+        return ($v === false) ? $default : (string)$v;
+    } catch (Throwable $e) {
+        return $default;
+    }
+}}
+try { ensureSiteSettings($pdo); } catch (Throwable $e) { error_log('site_settings bootstrap: ' . $e->getMessage()); }
+
+
 /* ==== HOURS_PATCH_24PLUS_START ==== */
 /* Helpers y manejador temprano para business_hours con soporte 24+ y cruces de medianoche */
 
@@ -270,10 +300,11 @@ function uploadImageSecure(array $file, string $target_dir, string $itemName = '
     imagedestroy($src);
     imagedestroy($dst);
 
-    // Escribir metadatos XMP (título del producto para SEO)
-    if ($itemName !== '') {
-        writeXmpToWebP($dest, $itemName, $itemDescription);
-    }
+    // XMP desactivado: corrompía el WebP (insertaba el chunk 'XMP ' antes de la
+    // imagen, dejando el archivo ilegible). El alt del <img> ya cubre el SEO.
+    // if ($itemName !== '') {
+    //     writeXmpToWebP($dest, $itemName, $itemDescription);
+    // }
 
     // Devolver URL pública absoluta (accesible desde cualquier instalación)
     return $pub_dir . $image_name;
@@ -703,12 +734,71 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 echo json_encode(['ok'=>true]);
             } catch (Throwable $e) { $pdo->rollBack(); echo json_encode(['ok'=>false,'error'=>$e->getMessage()]); }
             exit;
+        } elseif ($_POST['action'] === 'update_transfer_settings') {
+            $alias  = trim($_POST['transfer_alias']  ?? '');
+            $holder = trim($_POST['transfer_holder'] ?? '');
+            if ($alias === '' || $holder === '') {
+                $errors[] = "El alias y el titular no pueden quedar vacíos.";
+            } else {
+                $up = $pdo->prepare("
+                    INSERT INTO site_settings (setting_key, setting_value) VALUES (?, ?)
+                    ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)
+                ");
+                $up->execute(['transfer_alias',  substr($alias,  0, 190)]);
+                $up->execute(['transfer_holder', substr($holder, 0, 190)]);
+                $success[] = "Datos de transferencia actualizados.";
+            }
         }
     } catch (Exception $e) {
         $errors[] = "Error: " . $e->getMessage();
         file_put_contents('error_log.txt', "Error: " . $e->getMessage() . "\n", FILE_APPEND);
     }
 }
+
+// Asegurar que la categoría 'Extras' y sus productos existan en la BD para que puedan ser administrados desde este editor
+if (!function_exists('getOrCreateExtrasFromDB')) {
+function getOrCreateExtrasFromDB(PDO $pdo): void {
+    try {
+        $stmt = $pdo->prepare("SELECT id FROM categories WHERE LOWER(TRIM(name)) = 'extras' LIMIT 1");
+        $stmt->execute();
+        $catId = $stmt->fetchColumn();
+
+        if (!$catId) {
+            $maxOrder = (int)$pdo->query("SELECT COALESCE(MAX(display_order), 0) FROM categories")->fetchColumn();
+            $insCat = $pdo->prepare("INSERT INTO categories (name, display_order) VALUES ('Extras', ?)");
+            $insCat->execute([$maxOrder + 1]);
+            $catId = (int)$pdo->lastInsertId();
+        }
+
+        $itemsStmt = $pdo->prepare("SELECT id, name FROM menu_items WHERE category_id = ?");
+        $itemsStmt->execute([$catId]);
+        $items = $itemsStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        if (empty($items)) {
+            $initialExtras = [
+                ['name' => 'Stracciatella',   'price' => 5000.00, 'order' => 1],
+                ['name' => 'Anchoas',         'price' => 3000.00, 'order' => 2],
+                ['name' => 'Dip aceite oliva', 'price' => 1500.00, 'order' => 3],
+            ];
+            $insItem = $pdo->prepare("
+                INSERT INTO menu_items (name, price, category_id, is_visible, display_order, description)
+                VALUES (?, ?, ?, 1, ?, 'Extra para sumar a tu pizza')
+            ");
+            foreach ($initialExtras as $ie) {
+                $insItem->execute([$ie['name'], $ie['price'], $catId, $ie['order']]);
+            }
+        } else {
+            foreach ($items as $it) {
+                if (trim($it['name']) === 'Dip de aceite de oliva') {
+                    $pdo->prepare("UPDATE menu_items SET name = 'Dip aceite oliva' WHERE id = ?")->execute([$it['id']]);
+                }
+            }
+        }
+    } catch (Throwable $e) {
+        error_log("Error in getOrCreateExtrasFromDB (editor): " . $e->getMessage());
+    }
+}}
+getOrCreateExtrasFromDB($pdo);
 
 // Fetch all categories
 $categories_stmt = $pdo->query("SELECT * FROM categories ORDER BY display_order");
@@ -765,6 +855,10 @@ if (!empty($menu_items)) {
 // Fetch business hours
 $business_hours_stmt = $pdo->query("SELECT * FROM business_hours ORDER BY FIELD(day_of_week, 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'), start_time");
 $business_hours = $business_hours_stmt->fetchAll();
+
+// Ajustes del sitio para el formulario (datos de transferencia)
+$transfer_alias  = getSetting($pdo, 'transfer_alias',  'RRBBPIZZA');
+$transfer_holder = getSetting($pdo, 'transfer_holder', 'Ezequiel Urquidi');
 
 // Days of the week
 $days_of_week = [
@@ -1653,6 +1747,7 @@ $days_of_week = [
     <nav class="nav-menu">
         <ul>
             <li><a href="index.php#home">Home</a></li>
+            <li><a href="panel.php">Estadísticas</a></li>
             <li><a href="logout.php">Logout</a></li>
         </ul>
     </nav>
@@ -1730,6 +1825,22 @@ $days_of_week = [
                             <?php endforeach; ?>
                         </tbody>
                     </table>
+                </div>
+            </details>
+
+            <!-- Datos de Transferencia -->
+            <details>
+                <summary>Datos de Transferencia</summary>
+                <div class="editor-form">
+                    <h3>Alias y titular que ve el cliente</h3>
+                    <p class="note">Se muestran en la carta cuando el cliente elige pagar por transferencia (el aviso en pantalla y el mensaje que arma el WhatsApp).</p>
+                    <form method="POST">
+                        <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
+                        <input type="hidden" name="action" value="update_transfer_settings">
+                        <input type="text" name="transfer_alias" value="<?php echo htmlspecialchars($transfer_alias); ?>" placeholder="Alias" maxlength="190" required>
+                        <input type="text" name="transfer_holder" value="<?php echo htmlspecialchars($transfer_holder); ?>" placeholder="Titular de la cuenta" maxlength="190" required>
+                        <button type="submit">Guardar</button>
+                    </form>
                 </div>
             </details>
             <!-- Category Management -->

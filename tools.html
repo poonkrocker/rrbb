@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Herramientas UNC Psicología</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Syne:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #f8f7f4;
+    --surface: #ffffff;
+    --surface2: #f1efeb;
+    --border: #d6d3cc;
+    --border2: #e5e2dc;
+    --text: #1a1916;
+    --text2: #6b6860;
+    --text3: #9e9b96;
+    --accent: #1a4fd6;
+    --accent-hover: #1440b8;
+    --green: #1a7a4a;
+    --green-hover: #145f39;
+    --red-bg: #fef2f2;
+    --red-text: #991b1b;
+    --green-bg: #f0fdf4;
+    --green-text: #166534;
+    --tab-active: #1a1916;
+    --tab-inactive: #9e9b96;
+    --radius: 8px;
+    --radius-lg: 12px;
+  }
+
+  body {
+    font-family: 'Syne', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+
+  /* ─── TOPBAR ─── */
+  .topbar {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border2);
+    padding: 0 24px;
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+  }
+
+  .app-title {
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text);
+    padding: 16px 20px 16px 0;
+    margin-right: 12px;
+    border-right: 1px solid var(--border2);
+    align-self: center;
+    white-space: nowrap;
+  }
+
+  .tabs-nav {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .tabs-nav::-webkit-scrollbar { display: none; }
+
+  .tab-btn {
+    font-family: 'Syne', sans-serif;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--tab-inactive);
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 16px 18px;
+    cursor: pointer;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    transition: color 0.15s, border-color 0.15s;
+    position: relative;
+    top: 1px; /* aligns border-bottom with topbar's border-bottom */
+  }
+
+  .tab-btn:hover { color: var(--text2); }
+
+  .tab-btn.active {
+    color: var(--tab-active);
+    border-bottom-color: var(--tab-active);
+  }
+
+  .tab-icon { font-size: 15px; }
+
+  /* ─── CONTENT PANELS ─── */
+  .tab-panel { display: none; padding: 32px 24px; max-width: 900px; margin: 0 auto; }
+  .tab-panel.active { display: block; }
+
+  /* ─── SHARED FORM ELEMENTS ─── */
+  label, .panel-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text2);
+    display: block;
+    margin-bottom: 8px;
+  }
+
+  textarea {
+    width: 100%;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+    outline: none;
+    resize: vertical;
+    transition: border-color 0.15s;
+  }
+  textarea:focus { border-color: var(--accent); }
+
+  .btn {
+    font-family: 'Syne', sans-serif;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 9px 18px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    cursor: pointer;
+    transition: background 0.12s, transform 0.08s;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .btn:hover { background: var(--surface2); }
+  .btn:active { transform: scale(0.97); }
+
+  .btn-primary {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+  .btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+
+  .btn-success {
+    background: var(--green);
+    color: #fff;
+    border-color: var(--green);
+  }
+  .btn-success:hover { background: var(--green-hover); border-color: var(--green-hover); }
+
+  .btn-dark {
+    background: var(--text);
+    color: var(--bg);
+    border-color: var(--text);
+  }
+  .btn-dark:hover { background: #333; border-color: #333; }
+
+  .hint {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: var(--text3);
+    margin-top: 6px;
+  }
+
+  .section-title {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--text);
+    margin-bottom: 4px;
+  }
+
+  .section-desc {
+    font-size: 13px;
+    color: var(--text2);
+    margin-bottom: 28px;
+  }
+
+  /* ─── TOAST ─── */
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%) translateY(20px);
+    background: var(--text);
+    color: var(--bg);
+    font-size: 13px;
+    font-family: 'Syne', sans-serif;
+    padding: 8px 20px;
+    border-radius: var(--radius);
+    opacity: 0;
+    transition: opacity 0.2s, transform 0.2s;
+    pointer-events: none;
+    white-space: nowrap;
+    z-index: 100;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  /* ─── TAB 1: DNI LIMPIADOR ─── */
+  .dni-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    align-items: start;
+  }
+  @media (max-width: 600px) { .dni-grid { grid-template-columns: 1fr; } }
+
+  #dni-output { background: var(--surface2); cursor: pointer; }
+  #dni-output:hover { border-color: var(--border); }
+
+  .stat-badge {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    color: var(--text2);
+    margin-left: auto;
+  }
+  .stat-badge span { color: var(--text); font-weight: 600; }
+
+  /* ─── TAB 2: CSV GUARANÍ ─── */
+  #csv-output { background: var(--surface2); }
+
+  .preview-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .preview-table thead th {
+    background: var(--surface2);
+    padding: 10px 14px;
+    text-align: left;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text2);
+    border-bottom: 1px solid var(--border2);
+  }
+  .preview-table tbody td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border2);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+  }
+  .row-ok { background: var(--green-bg); color: var(--green-text); }
+  .row-err { background: var(--red-bg); color: var(--red-text); }
+  .preview-wrap {
+    border: 1px solid var(--border2);
+    border-radius: var(--radius);
+    overflow: hidden;
+    margin-top: 20px;
+  }
+
+  /* ─── TAB 3: RENOMBRADOR ─── */
+  .drop-zone {
+    border: 2px dashed var(--border);
+    padding: 48px 32px;
+    text-align: center;
+    background: var(--surface);
+    border-radius: var(--radius-lg);
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .drop-zone.dragover { border-color: var(--accent); background: #eef2fd; }
+  .drop-zone p { color: var(--text2); font-size: 14px; margin-bottom: 12px; }
+  .drop-zone .privacy-note {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: var(--text3);
+    margin-top: 10px;
+    margin-bottom: 0;
+  }
+
+  .rena-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .rena-table thead th {
+    background: var(--surface2);
+    padding: 10px 14px;
+    text-align: left;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text2);
+    border-bottom: 1px solid var(--border2);
+  }
+  .rena-table tbody td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border2);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+  }
+  .rena-table tbody tr:last-child td { border-bottom: none; }
+  .rena-table tbody td:last-child { font-weight: 600; color: var(--green); }
+  .rena-table tbody td.sin-nombre { color: var(--red-text); }
+
+  .rena-preview-wrap {
+    border: 1px solid var(--border2);
+    border-radius: var(--radius);
+    overflow: hidden;
+    max-height: 420px;
+    overflow-y: auto;
+    margin-top: 20px;
+  }
+
+  /* ─── DIVIDER ─── */
+  .divider { height: 1px; background: var(--border2); margin: 24px 0; }
+</style>
+</head>
+<body>
+
+<!-- TOPBAR CON TABS -->
+<nav class="topbar">
+  <div class="app-title">UNC · Psicología</div>
+  <div class="tabs-nav" role="tablist">
+    <button class="tab-btn active" role="tab" onclick="switchTab('dni', this)">
+      <span class="tab-icon">🪪</span> Limpiador DNI
+    </button>
+    <button class="tab-btn" role="tab" onclick="switchTab('csv', this)">
+      <span class="tab-icon">📋</span> Guaraní → CSV
+    </button>
+    <button class="tab-btn" role="tab" onclick="switchTab('rena', this)">
+      <span class="tab-icon">🔄</span> Renombrar Analíticos
+    </button>
+    <!-- Nuevas pestañas se agregan aquí -->
+  </div>
+</nav>
+
+<!-- ══════════════════════════════════════════
+     PANEL 1 · LIMPIADOR DE DNI
+══════════════════════════════════════════ -->
+<div id="panel-dni" class="tab-panel active">
+  <h2 class="section-title">Limpiador de DNI</h2>
+  <p class="section-desc">Extrae y normaliza DNIs a 8 dígitos desde cualquier formato.</p>
+
+  <div class="dni-grid">
+    <div>
+      <div class="panel-label">Entrada · pegá acá</div>
+      <textarea id="dni-input" rows="10"
+        placeholder="Pegá DNIs en cualquier formato&#10;&#10;23.456.789&#10;23 456 789&#10;DNI: 23456789&#10;Ramírez Juan 23.456.789"
+        spellcheck="false"></textarea>
+      <div class="hint">Acepta puntos, espacios, guiones, texto libre</div>
+    </div>
+    <div>
+      <div class="panel-label">Resultado · clic para copiar</div>
+      <textarea id="dni-output" rows="10" readonly
+        placeholder="Los DNIs limpios aparecen acá..."
+        spellcheck="false"></textarea>
+      <div class="hint" id="dni-click-hint"></div>
+    </div>
+  </div>
+
+  <div style="display:flex; align-items:center; gap:10px; margin-top:14px; flex-wrap:wrap;">
+    <button class="btn" id="dni-btn-copy">Copiar resultado</button>
+    <button class="btn" id="dni-btn-clear">Limpiar todo</button>
+    <div class="stat-badge" id="dni-stat"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════
+     PANEL 2 · GUARANÍ → CSV
+══════════════════════════════════════════ -->
+<div id="panel-csv" class="tab-panel">
+  <h2 class="section-title">Convertidor Guaraní → CSV</h2>
+  <p class="section-desc">Pegá tu lista con ✓ / ✗ y generá el CSV listo para Google Sheets.</p>
+
+  <div style="margin-bottom:16px;">
+    <label for="csv-input">Lista cruda</label>
+    <textarea id="csv-input" rows="10"
+      placeholder="Ejemplo:&#10;✓&#10;12345678&#10;Foto guardada correctamente&#10;✗&#10;87654321&#10;Sin resultado en Guaraní"></textarea>
+  </div>
+
+  <button class="btn btn-primary" onclick="csvConvertir()">🚀 Convertir a CSV</button>
+
+  <div id="csv-result" style="display:none; margin-top:24px;">
+    <div class="divider"></div>
+    <label for="csv-output">CSV generado</label>
+    <textarea id="csv-output" rows="7" readonly></textarea>
+
+    <div style="display:flex; gap:10px; margin-top:12px; flex-wrap:wrap;">
+      <button class="btn btn-dark" onclick="csvCopiar()">📋 Copiar CSV</button>
+      <button class="btn btn-success" onclick="csvDescargar()">⬇️ Descargar .csv</button>
+    </div>
+
+    <div style="margin-top:24px;">
+      <div class="panel-label">Vista previa</div>
+      <div class="preview-wrap">
+        <table class="preview-table">
+          <thead><tr><th>DNI</th><th>Estado</th></tr></thead>
+          <tbody id="csv-preview-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════
+     PANEL 3 · RENOMBRADOR ANALÍTICOS
+══════════════════════════════════════════ -->
+<div id="panel-rena" class="tab-panel">
+  <h2 class="section-title">Renombrador de Analíticos</h2>
+  <p class="section-desc">Arrastrá los PDFs y descargalos renombrados con el nombre del estudiante.</p>
+
+  <div class="drop-zone" id="rena-dropZone">
+    <p>Arrastrá tus PDFs acá o</p>
+    <button class="btn btn-primary" onclick="document.getElementById('rena-fileInput').click()">Seleccionar archivos</button>
+    <p class="privacy-note">⚡ Procesado localmente · Nada se sube a internet</p>
+    <input type="file" id="rena-fileInput" multiple accept=".pdf" style="display:none">
+  </div>
+
+  <div id="rena-result" style="display:none; margin-top:20px;">
+    <div class="panel-label">Vista previa de renombrado</div>
+    <div class="rena-preview-wrap">
+      <table class="rena-table">
+        <thead><tr><th>Archivo original</th><th>Nombre nuevo</th></tr></thead>
+        <tbody id="rena-tbody"></tbody>
+      </table>
+    </div>
+
+    <div style="display:flex; gap:10px; margin-top:16px; flex-wrap:wrap;">
+      <button class="btn btn-success" onclick="renaDownloadAll()">⬇️ Descargar todos los PDFs renombrados</button>
+      <button class="btn" onclick="renaReset()">Procesar otros archivos</button>
+    </div>
+  </div>
+</div>
+
+<!-- TOAST -->
+<div class="toast" id="toast"></div>
+
+<!-- ══════════════════════════════════════════
+     SCRIPTS
+══════════════════════════════════════════ -->
+<script>
+/* ── TABS ── */
+function switchTab(name, btn) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('panel-' + name).classList.add('active');
+  btn.classList.add('active');
+}
+
+/* ── TOAST ── */
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg || 'Copiado al portapapeles ✓';
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 1800);
+}
+
+/* ══════════════════════
+   TAB 1: DNI LIMPIADOR
+══════════════════════ */
+const dniInput  = document.getElementById('dni-input');
+const dniOutput = document.getElementById('dni-output');
+const dniStat   = document.getElementById('dni-stat');
+const dniHint   = document.getElementById('dni-click-hint');
+
+function extractDNIs(text) {
+  const lines = text.split('\n');
+  const results = [];
+  for (const line of lines) {
+    const stripped = line.trim();
+    if (!stripped) continue;
+    const matches = stripped.match(/\b\d[\d.\- ]{6,}\d\b/g);
+    if (!matches) continue;
+    for (const m of matches) {
+      const digits = m.replace(/[.\- ]/g, '');
+      if (digits.length >= 7 && digits.length <= 8) {
+        results.push(digits.padStart(8, '0'));
+      }
+    }
+  }
+  return [...new Set(results)];
+}
+
+function dniProcess() {
+  const raw = dniInput.value;
+  if (!raw.trim()) {
+    dniOutput.value = '';
+    dniStat.innerHTML = '';
+    dniHint.textContent = '';
+    return;
+  }
+  const dnis = extractDNIs(raw);
+  dniOutput.value = dnis.join('\n');
+  if (dnis.length > 0) {
+    dniStat.innerHTML = `<span>${dnis.length}</span> DNI${dnis.length !== 1 ? 's' : ''} encontrado${dnis.length !== 1 ? 's' : ''}`;
+    dniHint.textContent = 'Clic en el resultado para copiar';
+  } else {
+    dniStat.innerHTML = 'Sin DNIs detectados';
+    dniHint.textContent = '';
+  }
+}
+
+function dniCopy() {
+  const text = dniOutput.value;
+  if (!text) return;
+  navigator.clipboard.writeText(text).then(() => showToast());
+}
+
+dniInput.addEventListener('input', dniProcess);
+dniInput.addEventListener('paste', () => setTimeout(dniProcess, 0));
+dniOutput.addEventListener('click', dniCopy);
+document.getElementById('dni-btn-copy').addEventListener('click', dniCopy);
+document.getElementById('dni-btn-clear').addEventListener('click', () => {
+  dniInput.value = '';
+  dniOutput.value = '';
+  dniStat.innerHTML = '';
+  dniHint.textContent = '';
+  dniInput.focus();
+});
+
+/* ══════════════════════
+   TAB 2: GUARANÍ → CSV
+══════════════════════ */
+function csvConvertir() {
+  const texto = document.getElementById('csv-input').value.trim();
+  if (!texto) return showToast('Pegá la lista primero');
+
+  const lineas = texto.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+  let csv = 'DNI,Estado\n';
+  const entradas = [];
+
+  for (let i = 0; i < lineas.length; i += 3) {
+    if (i + 2 >= lineas.length) break;
+    const dni    = lineas[i + 1];
+    const estado = lineas[i + 2];
+    entradas.push({ dni, estado });
+    csv += `${dni},${estado}\n`;
+  }
+
+  document.getElementById('csv-output').value = csv.trim();
+  document.getElementById('csv-result').style.display = 'block';
+
+  const tbody = document.getElementById('csv-preview-body');
+  tbody.innerHTML = '';
+  entradas.forEach(e => {
+    const ok = e.estado.includes('Foto guardada correctamente');
+    const tr = document.createElement('tr');
+    tr.className = ok ? 'row-ok' : 'row-err';
+    tr.innerHTML = `<td>${e.dni}</td><td>${e.estado}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+function csvCopiar() {
+  const val = document.getElementById('csv-output').value;
+  if (!val) return;
+  navigator.clipboard.writeText(val).then(() => showToast('CSV copiado ✓'));
+}
+
+function csvDescargar() {
+  const csv = document.getElementById('csv-output').value;
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `guarani-${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/* ══════════════════════
+   TAB 3: RENOMBRADOR
+══════════════════════ */
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+const dropZone  = document.getElementById('rena-dropZone');
+const fileInput = document.getElementById('rena-fileInput');
+let processedFiles = [];
+
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('dragover'); renaHandleFiles(e.dataTransfer.files); });
+fileInput.addEventListener('change', e => renaHandleFiles(e.target.files));
+
+async function renaHandleFiles(files) {
+  processedFiles = [];
+  const tbody = document.getElementById('rena-tbody');
+  tbody.innerHTML = '';
+  document.getElementById('rena-result').style.display = 'block';
+
+  for (const file of files) {
+    if (!file.name.toLowerCase().endsWith('.pdf')) continue;
+
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    let fullText = '';
+
+    for (let i = 1; i <= Math.min(3, pdf.numPages); i++) {
+      const page = await pdf.getPage(i);
+      const tc = await page.getTextContent();
+      fullText += tc.items.map(item => item.str).join(' ') + '\n';
+    }
+
+    const regex = /certifica que\s+([A-ZÁÉÍÓÚÑ\s,]+?)\s*,\s*Legajo Nº/i;
+    const match = fullText.match(regex);
+    let newName = file.name;
+    let sinNombre = false;
+
+    if (match && match[1]) {
+      let nombre = match[1].trim().replace(/\s+/g, ' ').replace(/,\s*$/, '').replace(/[\/\\:*?"<>|]/g, '');
+      newName = `${nombre}.pdf`;
+    } else {
+      newName = `SIN_NOMBRE_${file.name}`;
+      sinNombre = true;
+    }
+
+    processedFiles.push({ file, newName });
+
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${file.name}</td>
+      <td class="${sinNombre ? 'sin-nombre' : ''}">${newName}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+function renaDownloadAll() {
+  if (!processedFiles.length) return showToast('No hay archivos procesados');
+  processedFiles.forEach((item, i) => {
+    setTimeout(() => {
+      const newFile = new File([item.file], item.newName, { type: item.file.type });
+      const url = URL.createObjectURL(newFile);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = item.newName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, i * 350);
+  });
+}
+
+function renaReset() {
+  processedFiles = [];
+  document.getElementById('rena-tbody').innerHTML = '';
+  document.getElementById('rena-result').style.display = 'none';
+  document.getElementById('rena-fileInput').value = '';
+}
+</script>
+</body>
+</html>

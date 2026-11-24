@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Convertidor Guaraní → CSV</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: system-ui, sans-serif; }
+        textarea { resize: vertical; }
+    </style>
+</head>
+<body class="bg-gray-50 py-8">
+    <div class="max-w-4xl mx-auto px-6">
+        <div class="bg-white rounded-2xl shadow-xl p-8">
+            <h1 class="text-3xl font-bold text-gray-800 mb-2">📋 Convertidor Guaraní a CSV</h1>
+            <p class="text-gray-600 mb-8">Pegá tu lista con ✓ / ✗ y te genera el CSV listo para Google Sheets</p>
+
+            <div class="mb-6">
+                <label class="block text-sm font-medium text-gray-700 mb-2">Pegá aquí tu lista cruda:</label>
+                <textarea id="input" rows="12" 
+                          class="w-full p-4 border border-gray-300 rounded-xl font-mono text-sm focus:outline-none focus:border-blue-500"
+                          placeholder="Ejemplo:&#10;✓&#10;12345678&#10;Foto guardada correctamente&#10;✗&#10;87654321&#10;Sin resultado en Guaraní"></textarea>
+            </div>
+
+            <button onclick="convertir()" 
+                    class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-4 rounded-xl text-lg transition">
+                🚀 Convertir a CSV
+            </button>
+
+            <div id="result" class="hidden mt-8">
+                <label class="block text-sm font-medium text-gray-700 mb-2">CSV listo para copiar:</label>
+                <textarea id="output" rows="8" readonly
+                          class="w-full p-4 border border-gray-300 rounded-xl font-mono text-sm bg-gray-50"></textarea>
+                
+                <div class="flex gap-3 mt-4">
+                    <button onclick="copiarCSV()" 
+                            class="flex-1 bg-gray-800 hover:bg-gray-900 text-white py-3 rounded-xl font-medium">
+                        📋 Copiar CSV
+                    </button>
+                    <button onclick="descargarCSV()" 
+                            class="flex-1 bg-green-600 hover:bg-green-700 text-white py-3 rounded-xl font-medium">
+                        ⬇️ Descargar archivo .csv
+                    </button>
+                </div>
+
+                <h3 class="text-lg font-semibold mt-8 mb-3">Vista previa con colores:</h3>
+                <div id="preview" class="border border-gray-200 rounded-xl overflow-hidden"></div>
+            </div>
+        </div>
+
+        <p class="text-center text-xs text-gray-500 mt-8">
+            Funciona con ✓ / ✗ y cualquier texto de estado (incluido "No apareció confirmación de Guaraní")
+        </p>
+    </div>
+
+    <script>
+        function convertir() {
+            const texto = document.getElementById('input').value.trim();
+            if (!texto) return alert("Pegá la lista primero");
+
+            const lineas = texto.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+            let csv = 'DNI,Estado\n';
+            let entradas = [];
+
+            for (let i = 0; i < lineas.length; i += 3) {
+                if (i + 2 >= lineas.length) break;
+                const dni = lineas[i + 1];
+                const estado = lineas[i + 2];
+                entradas.push({ dni, estado });
+                csv += `${dni},${estado}\n`;
+            }
+
+            document.getElementById('output').value = csv.trim();
+            document.getElementById('result').classList.remove('hidden');
+            mostrarPreview(entradas);
+        }
+
+        function mostrarPreview(entradas) {
+            let html = `<table class="w-full text-sm"><thead class="bg-gray-100"><tr><th class="py-3 px-4 text-left">DNI</th><th class="py-3 px-4 text-left">Estado</th></tr></thead><tbody>`;
+            
+            entradas.forEach(e => {
+                const esCorrecto = e.estado.includes('Foto guardada correctamente');
+                const color = esCorrecto ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800';
+                html += `<tr class="${color}"><td class="py-3 px-4 font-mono">${e.dni}</td><td class="py-3 px-4">${e.estado}</td></tr>`;
+            });
+            
+            html += `</tbody></table>`;
+            document.getElementById('preview').innerHTML = html;
+        }
+
+        function copiarCSV() {
+            const output = document.getElementById('output');
+            output.select();
+            document.execCommand('copy');
+            alert('✅ CSV copiado al portapapeles');
+        }
+
+        function descargarCSV() {
+            const csv = document.getElementById('output').value;
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.setAttribute('href', url);
+            link.setAttribute('download', `guarani-lista-${new Date().toISOString().slice(0,10)}.csv`);
+            link.click();
+        }
+    </script>
+</body>
+</html>

@@ -291,9 +291,6 @@ try {
     $sub_products = [];
 }
 
-// Variantes con precio propio (Muzza / Fugazzeta / Arrabbiata, etc.)
-require_once '_variants_data.php';
-
 // Fetch eligible items (visible pizzas)
 $eligible_items = [];
 try {
@@ -441,9 +438,7 @@ try {
         </div>
     </section>
 
-<a href="#category-7">
-    <img id="secret-image" class="secret-image" src="https://arrabbiata.com.ar/Uploads/csgif.gif" alt="Carta Secreta" onclick="toggleSecretMode()">
-</a>
+    <img id="secret-image" class="secret-image" src="https://arrabbiata.com.ar/Uploads/csgif.gif" alt="Carta Secreta" onclick="toggleSecretMode(event)" style="cursor:pointer;">
 
     <?php include 'cart_modal.php'; ?>
 
@@ -541,7 +536,7 @@ try {
             }
         }
 
-        function addToCart(name, price, itemId, isVegan, selectedSubproducts = [], dependentPizza = null, variantId = null) {
+        function addToCart(name, price, itemId, isVegan, selectedSubproducts = [], dependentPizza = null) {
             if (!isOpen) {
                 alert('Lo sentimos, estamos cerrados en este momento.');
                 return;
@@ -549,7 +544,6 @@ try {
             const cart = JSON.parse(localStorage.getItem('cart')) || [];
             const item = {
                 id: itemId,
-                variantId: variantId,
                 name: name,
                 price: price,
                 quantity: 1,
@@ -560,7 +554,6 @@ try {
             
             const existingItem = cart.find(cartItem => 
                 cartItem.id === itemId && 
-                (cartItem.variantId ?? null) === (variantId ?? null) &&
                 cartItem.isVegan === isVegan && 
                 JSON.stringify(cartItem.subproducts) === JSON.stringify(selectedSubproducts) &&
                 JSON.stringify(cartItem.dependentPizza) === JSON.stringify(dependentPizza)
@@ -576,38 +569,6 @@ try {
             showCartButton();
         }
 
-        // ====== VARIANTES con precio propio ======
-        function selectVariant(pill) {
-            const picker = pill.closest('.variant-picker');
-            picker.querySelectorAll('.variant-pill').forEach(p => p.classList.remove('active'));
-            pill.classList.add('active');
-            const price = parseFloat(pill.dataset.variantPrice);
-            const desc  = pill.dataset.variantDesc || '';
-            const priceEl = picker.querySelector('.variant-current-price');
-            priceEl.dataset.price = price;
-            priceEl.textContent = price.toLocaleString('es-AR', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-            const descEl = picker.querySelector('.variant-desc');
-            if (descEl) descEl.textContent = desc;
-        }
-
-        function addSelectedVariantToCart(btn) {
-            if (!isOpen) {
-                alert('Lo sentimos, estamos cerrados en este momento.');
-                return;
-            }
-            const card   = btn.closest('.pizza-item');
-            const picker  = btn.closest('.variant-picker');
-            const active = picker.querySelector('.variant-pill.active') || picker.querySelector('.variant-pill');
-            if (!active) return;
-            const itemId    = card.dataset.itemId;
-            const baseName  = card.dataset.itemName;
-            const variantId = 'v' + active.dataset.variantId;
-            const vName     = active.dataset.variantName;
-            const vPrice    = parseFloat(active.dataset.variantPrice);
-            addToCart(`${baseName} — ${vName}`, vPrice, itemId, false, [], null, variantId);
-        }
-
-
         function updateCartUI() {
             const cart = JSON.parse(localStorage.getItem('cart')) || [];
             const cartCount = document.getElementById('cartCount');
@@ -622,23 +583,27 @@ try {
             let itemCount = 0;
             
             cartItems.innerHTML = '';
-            cart.forEach(item => {
+            cart.forEach((item, index) => {
                 let itemTotal = item.price * item.quantity;
                 itemCount += item.quantity;
                 
                 const cartItem = document.createElement('div');
                 cartItem.className = 'cart-item';
                 let displayName = item.name;
-                if (item.subproducts.length > 0) {
+                if (item.subproducts && item.subproducts.length > 0) {
                     displayName += ` (${item.subproducts.map(s => s.name).join(', ')})`;
                 }
                 if (item.dependentPizza) {
                     displayName += ` + ${item.dependentPizza.name}`;
                     itemTotal += item.dependentPizza.price * item.quantity;
                 }
+                const safeName = displayName.replace(/"/g, '&quot;');
                 cartItem.innerHTML = `
-                    <span>${displayName} x${item.quantity}</span>
-                    <span>$${itemTotal.toFixed(2)}</span>
+                    <div class="cart-item-info">
+                        <button type="button" class="cart-item-remove" onclick="removeCartItem(${index})" title="Eliminar este ítem" aria-label="Eliminar ${safeName}">✕</button>
+                        <span class="cart-item-name">${displayName} x${item.quantity}</span>
+                    </div>
+                    <span class="cart-item-price">$${itemTotal.toFixed(2)}</span>
                 `;
                 cartItems.appendChild(cartItem);
                 total += itemTotal;
@@ -658,13 +623,27 @@ try {
             cartContainer.style.display = itemCount > 0 ? 'block' : 'none';
         }
 
+        function removeCartItem(index) {
+            const cart = JSON.parse(localStorage.getItem('cart')) || [];
+            if (index >= 0 && index < cart.length) {
+                cart.splice(index, 1);
+                localStorage.setItem('cart', JSON.stringify(cart));
+                updateCartUI();
+                if (cart.length === 0) {
+                    closeCart();
+                }
+            }
+        }
+
         function showCartButton() {
             const cartContainer = document.getElementById('cartContainer');
             cartContainer.style.display = 'block';
             cartContainer.classList.add('active');
         }
 
-        function toggleCart() {
+        function toggleCart(ev) {
+            if (ev && ev.preventDefault) ev.preventDefault();
+            if (ev && ev.stopPropagation) ev.stopPropagation();
             if (!isOpen) {
                 alert('Lo sentimos, estamos cerrados en este momento.');
                 return;
@@ -680,7 +659,9 @@ try {
             updateCartUI();
         }
 
-        function closeCart() {
+        function closeCart(ev) {
+            if (ev && ev.preventDefault) ev.preventDefault();
+            if (ev && ev.stopPropagation) ev.stopPropagation();
             const modal = document.getElementById('cartModal');
             const overlay = document.getElementById('overlay');
             modal.style.display = 'none';
@@ -717,19 +698,29 @@ try {
             }
             const cart = JSON.parse(localStorage.getItem('cart')) || [];
             const customerName = document.getElementById('customerName').value.trim();
+            const customerPhone = document.getElementById('customerPhone')?.value.trim() || '';
             const paymentMethod = document.getElementById('paymentMethod').value;
             const address = document.getElementById('deliveryAddress')?.value.trim() || '';
 
             if (!customerName) { alert('Por favor ingresa tu nombre para el pedido'); return; }
+            if (!customerPhone) { alert('Por favor ingresá tu teléfono o WhatsApp'); return; }
             if (deliveryType === 'envio' && !address) { alert('Por favor ingresá la dirección de entrega'); return; }
             if (!paymentMethod) { alert('Por favor selecciona una forma de pago'); return; }
             if (cart.length === 0) { alert('El carrito está vacío'); return; }
+
+            try {
+                localStorage.setItem('rrbb_customer_name', customerName);
+                localStorage.setItem('rrbb_customer_phone', customerPhone);
+                if (address) localStorage.setItem('rrbb_customer_address', address);
+            } catch (e) {}
 
             const entrega = deliveryType === 'envio'
                 ? `🛵 *Envío a domicilio*\nDirección: ${address}`
                 : `🏪 *Retiro en local* (27 de abril 798)`;
 
-            let message = `Hola, soy *${customerName}* y quisiera hacer el siguiente pedido:\n\n`;
+            let message = `Hola, soy *${customerName}*`;
+            if (customerPhone) message += ` (${customerPhone})`;
+            message += ` y quisiera hacer el siguiente pedido:\n\n`;
             let total = 0;
             cart.forEach(item => {
                 let itemTotal = item.price * item.quantity;

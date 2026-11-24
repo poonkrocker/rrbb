@@ -1,0 +1,1715 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Herramientas de Edición Académica</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;1,400&family=Source+Sans+3:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f5f0e8;
+    --surface: #faf7f2;
+    --border: #d4c9b0;
+    --accent: #2c4a3e;
+    --accent-light: #4a7c6b;
+    --accent-muted: #e8efe8;
+    --text: #1a1a1a;
+    --text-muted: #6b6b5a;
+    --error: #8b2020;
+    --error-bg: #fdf0f0;
+    --warning: #7a5c00;
+    --warning-bg: #fffbec;
+    --success: #1a4a2e;
+    --success-bg: #edf7f2;
+    --shadow: 0 2px 12px rgba(44,74,62,0.08);
+    --radius: 6px;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Source Sans 3', sans-serif;
+    min-height: 100vh;
+    padding: 2rem 1rem 4rem;
+  }
+
+  header {
+    max-width: 800px;
+    margin: 0 auto 2rem;
+    border-bottom: 2px solid var(--accent);
+    padding-bottom: 1.1rem;
+  }
+  header h1 {
+    font-family: 'Playfair Display', serif;
+    font-size: clamp(1.5rem, 4vw, 2rem);
+    color: var(--accent);
+    line-height: 1.2;
+  }
+  header p {
+    margin-top: 0.35rem;
+    color: var(--text-muted);
+    font-size: 0.88rem;
+    font-weight: 300;
+  }
+
+  /* TABS */
+  .tab-bar {
+    max-width: 800px;
+    margin: 0 auto 1.5rem;
+    display: flex;
+    border-bottom: 2px solid var(--border);
+  }
+  .tab-btn {
+    cursor: pointer;
+    font-family: 'Source Sans 3', sans-serif;
+    font-weight: 600;
+    font-size: 0.85rem;
+    letter-spacing: 0.03em;
+    background: transparent;
+    border: none;
+    border-bottom: 3px solid transparent;
+    margin-bottom: -2px;
+    padding: 0.65rem 0.5rem;
+    flex: 1;
+    text-align: center;
+    color: var(--text-muted);
+    transition: all 0.18s;
+    white-space: nowrap;
+  }
+  .tab-btn:hover { color: var(--accent); }
+  .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* LAYOUT */
+  .container {
+    max-width: 800px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 1.4rem;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.4rem;
+    box-shadow: var(--shadow);
+  }
+
+  label {
+    display: block;
+    font-weight: 600;
+    font-size: 0.8rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 0.45rem;
+  }
+
+  textarea {
+    width: 100%;
+    padding: 0.75rem 1rem;
+    border: 1.5px solid var(--border);
+    border-radius: var(--radius);
+    background: white;
+    font-family: 'Source Sans 3', sans-serif;
+    font-size: 0.97rem;
+    color: var(--text);
+    resize: vertical;
+    transition: border-color 0.2s;
+    line-height: 1.55;
+  }
+  textarea:focus {
+    outline: none;
+    border-color: var(--accent-light);
+    box-shadow: 0 0 0 3px rgba(74,124,107,0.12);
+  }
+
+  /* Clearable wrapper */
+  .clearable-wrap { position: relative; }
+  .clearable-wrap .clear-btn {
+    position: absolute;
+    top: 50%; right: 0.55rem;
+    transform: translateY(-50%);
+    background: none; border: none; padding: 0.2rem 0.35rem;
+    font-size: 0.85rem; color: var(--text-muted);
+    cursor: pointer; border-radius: 3px; line-height: 1;
+    opacity: 0; transition: opacity 0.15s, color 0.15s;
+    pointer-events: none;
+  }
+  .clearable-wrap:hover .clear-btn,
+  .clearable-wrap .clear-btn.visible { opacity: 1; pointer-events: auto; }
+  .clearable-wrap .clear-btn:hover { color: var(--error); }
+  /* Extra right padding so text doesn't go under the ✕ */
+  .clearable-wrap textarea,
+  .clearable-wrap input[type="text"] { padding-right: 2rem; }
+
+  .hint {
+    margin-top: 0.38rem;
+    font-size: 0.77rem;
+    color: var(--text-muted);
+  }
+
+  .btn-row { display: flex; gap: 0.65rem; flex-wrap: wrap; margin-top: 1rem; }
+
+  button {
+    cursor: pointer;
+    font-family: 'Source Sans 3', sans-serif;
+    font-weight: 600;
+    font-size: 0.86rem;
+    letter-spacing: 0.04em;
+    border: none;
+    border-radius: var(--radius);
+    padding: 0.6rem 1.3rem;
+    transition: all 0.18s;
+  }
+  .btn-primary { background: var(--accent); color: white; }
+  .btn-primary:hover { background: var(--accent-light); }
+  .btn-secondary { background: transparent; color: var(--accent); border: 1.5px solid var(--accent); }
+  .btn-secondary:hover { background: var(--accent-muted); }
+  .btn-ghost {
+    background: transparent; color: var(--text-muted);
+    border: 1.5px solid var(--border); font-size: 0.8rem; padding: 0.48rem 0.9rem;
+  }
+  .btn-ghost:hover { border-color: var(--accent-light); color: var(--accent); }
+
+  /* RESULT BOX — click to copy */
+  .result-box {
+    position: relative;
+    cursor: pointer;
+    border-radius: var(--radius);
+  }
+  .result-box:hover .copy-hint { opacity: 1; }
+  .copy-hint {
+    position: absolute;
+    top: 0.5rem; right: 0.6rem;
+    font-size: 0.72rem;
+    font-family: 'Source Sans 3', sans-serif;
+    font-weight: 500;
+    color: var(--accent-light);
+    opacity: 0;
+    transition: opacity 0.2s;
+    pointer-events: none;
+    background: rgba(232,239,232,0.9);
+    padding: 0.15rem 0.5rem;
+    border-radius: 3px;
+  }
+
+  .result-title-inner {
+    font-family: 'Playfair Display', serif;
+    font-size: 1.25rem;
+    line-height: 1.5;
+    color: var(--accent);
+    padding: 0.9rem 2.8rem 0.9rem 1rem;
+    background: var(--accent-muted);
+    border-radius: var(--radius);
+    border-left: 3px solid var(--accent);
+    word-break: break-word;
+    min-height: 3rem;
+    transition: background 0.3s, border-left-color 0.3s;
+  }
+  .result-title-inner.copied {
+    background: #cfe8cf;
+    border-left-color: var(--accent-light);
+  }
+
+  .result-desc-inner {
+    font-family: 'Source Sans 3', sans-serif;
+    font-size: 0.97rem;
+    line-height: 1.65;
+    color: var(--text);
+    padding: 0.9rem 2.8rem 0.9rem 1rem;
+    background: white;
+    border: 1.5px solid var(--border);
+    border-radius: var(--radius);
+    word-break: break-word;
+    white-space: pre-wrap;
+    min-height: 3rem;
+    transition: background 0.3s, border-color 0.3s;
+  }
+  .result-desc-inner.copied {
+    background: #f0f7f0;
+    border-color: var(--accent-light);
+  }
+
+  /* SECTION LABELS & ISSUES */
+  .hidden { display: none; }
+
+  .section-label {
+    font-weight: 600;
+    font-size: 0.8rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 0.7rem;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+  }
+  .section-label .count {
+    font-weight: 300;
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 0.8rem;
+  }
+
+  .issues-list { display: flex; flex-direction: column; gap: 0.55rem; }
+  .issue-item {
+    display: flex; gap: 0.75rem; align-items: flex-start;
+    padding: 0.65rem 0.85rem;
+    border-radius: var(--radius);
+    font-size: 0.86rem; line-height: 1.45;
+  }
+  .issue-error   { background: var(--error-bg);    border-left: 3px solid var(--error);        color: var(--error); }
+  .issue-warning { background: var(--warning-bg);  border-left: 3px solid var(--warning);      color: var(--warning); }
+  .issue-info    { background: var(--accent-muted); border-left: 3px solid var(--accent-light); color: var(--accent); }
+  .issue-icon { font-size: 1rem; flex-shrink: 0; margin-top: 1px; }
+  .issue-text strong { display: block; font-weight: 600; margin-bottom: 0.12rem; }
+
+  .no-issues {
+    background: var(--success-bg);
+    border: 1px solid #b0d8c0;
+    border-radius: var(--radius);
+    padding: 0.65rem 1rem;
+    color: var(--success);
+    font-size: 0.88rem;
+    display: flex; align-items: center; gap: 0.5rem;
+  }
+
+  .divider { border: none; border-top: 1px solid var(--border); margin: 1.1rem 0; }
+
+  .preview-box {
+    font-size: 0.95rem; line-height: 1.65;
+    padding: 0.75rem 1rem;
+    background: white; border: 1px solid var(--border);
+    border-radius: var(--radius); word-break: break-word;
+  }
+  .preview-title-box {
+    font-family: 'Playfair Display', serif;
+    font-size: 1.05rem; line-height: 1.6;
+    padding: 0.75rem 1rem;
+    background: white; border: 1px solid var(--border);
+    border-radius: var(--radius); word-break: break-word;
+  }
+  .preview-box { white-space: pre-wrap; }
+
+  mark.hl-error   { background: #fdd; text-decoration: underline wavy var(--error); border-radius: 2px; }
+  mark.hl-warning { background: #fef3c7; text-decoration: underline wavy var(--warning); border-radius: 2px; }
+  mark.hl-qfix    { background: #ffe0b2; border-radius: 2px; outline: 1px solid #f57c00; }
+
+  /* TOAST */
+  #toast {
+    position: fixed; bottom: 1.5rem; left: 50%;
+    transform: translateX(-50%) translateY(60px);
+    background: var(--accent); color: white;
+    padding: 0.55rem 1.2rem; border-radius: 20px;
+    font-size: 0.83rem; font-weight: 500;
+    opacity: 0; transition: all 0.28s; z-index: 999; white-space: nowrap;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  footer {
+    max-width: 800px; margin: 2rem auto 0;
+    text-align: center; font-size: 0.76rem; color: var(--text-muted);
+    border-top: 1px solid var(--border); padding-top: 1rem;
+  }
+
+  /* ── NOMBRES: fila de revisión individual ── */
+  .nom-row {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr auto;
+    gap: 0.5rem;
+    align-items: end;
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.55rem 0.75rem;
+    transition: border-color 0.2s;
+  }
+  .nom-row:hover { border-color: var(--accent-light); }
+  .nom-row.flipped {
+    animation: flip-flash 0.35s ease;
+  }
+  @keyframes flip-flash {
+    0%   { background: white; }
+    40%  { background: #d8eee4; }
+    100% { background: white; }
+  }
+
+  .nom-field-label {
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 0.22rem;
+  }
+
+  .nom-input {
+    width: 100%;
+    padding: 0.38rem 0.6rem;
+    border: 1.5px solid var(--border);
+    border-radius: 4px;
+    font-family: 'Source Sans 3', sans-serif;
+    font-size: 0.9rem;
+    color: var(--text);
+    transition: border-color 0.15s;
+  }
+  .nom-input:focus {
+    outline: none;
+    border-color: var(--accent-light);
+  }
+
+  /* botón de inversión ⇄ */
+  .btn-swap {
+    background: transparent;
+    border: 1.5px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-size: 1rem;
+    line-height: 1;
+    padding: 0.38rem 0.55rem;
+    cursor: pointer;
+    transition: all 0.18s;
+    align-self: end;
+    flex-shrink: 0;
+    margin-bottom: 0; /* alineado con inputs */
+  }
+  .btn-swap:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-muted);
+    transform: rotate(180deg);
+  }
+
+  /* toolbar encima de las filas */
+  .nombres-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-bottom: 0.65rem;
+    flex-wrap: wrap;
+  }
+  .nombres-toolbar .section-label { margin-bottom: 0; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Herramientas de Edición Académica</h1>
+  <p>Formateador de títulos · Corrector de descripciones</p>
+</header>
+
+<div class="tab-bar">
+  <button class="tab-btn active" onclick="switchTab('titles', this)">✦ Títulos</button>
+  <button class="tab-btn" onclick="switchTab('descs', this)">✦ Descripciones</button>
+  <button class="tab-btn" onclick="switchTab('fils', this)">✦ Filiaciones</button>
+  <button class="tab-btn" onclick="switchTab('nombres', this)">✦ Nombres</button>
+  <button class="tab-btn" onclick="switchTab('mayus', this)">A/a</button>
+</div>
+
+<!-- ════════════════ TAB 1: TÍTULOS ════════════════ -->
+<div id="tab-titles" class="tab-panel active">
+<div class="container">
+
+  <div class="card">
+    <label for="input-title">Título completo (con subtítulo incluido)</label>
+    <div class="clearable-wrap">
+      <textarea id="input-title" placeholder="Ej: PRÁCTICA PREPROFESIONAL DEL CONTEXTO JURÍDICO. APORTACIONES PARA LA PREVENCIÓN DE LA VIOLENCIA" rows="3" oninput="toggleClearBtn(this)"></textarea>
+      <button class="clear-btn" onclick="clearableReset('input-title', clearTitle)" tabindex="-1" title="Limpiar">✕</button>
+    </div>
+    <p class="hint">Los separadores existentes (<code>.</code>&nbsp;<code>–</code>&nbsp;<code>-</code>&nbsp;<code>:</code>) se detectan automáticamente y se convierten a <code>&nbsp;:&nbsp;</code> (espacio·dos puntos·espacio). La primera palabra del subtítulo queda en minúscula.</p>
+    <div class="btn-row">
+      <button class="btn-primary" onclick="formatTitle()">✦ Formatear</button>
+      <button class="btn-secondary" onclick="clearTitle()">Limpiar</button>
+    </div>
+  </div>
+
+  <div class="card hidden" id="t-result-section">
+    <div class="section-label">Resultado <span style="font-weight:300;text-transform:none;letter-spacing:0;font-size:0.78rem">— clic para copiar</span></div>
+    <div class="result-box" onclick="copyBox('t-result-inner', this)" title="Clic para copiar">
+      <div class="result-title-inner" id="t-result-inner"></div>
+      <span class="copy-hint">⧉ copiar</span>
+    </div>
+
+    <hr class="divider">
+    <div class="section-label">Revisión <span class="count" id="t-issue-count"></span></div>
+    <div id="t-issues-container"></div>
+
+    <div id="t-preview-section" class="hidden" style="margin-top:1.1rem">
+      <hr class="divider">
+      <div class="section-label">Vista marcada</div>
+      <div class="preview-title-box" id="t-preview-text"></div>
+    </div>
+
+    <div class="btn-row" style="margin-top:1rem">
+      <button class="btn-ghost" onclick="sendTitleToInput()">↩ Editar resultado</button>
+    </div>
+  </div>
+
+</div>
+</div>
+
+<!-- ════════════════ TAB 2: DESCRIPCIONES ════════════════ -->
+<div id="tab-descs" class="tab-panel">
+<div class="container">
+
+  <div class="card">
+    <label for="input-desc">Texto de la descripción</label>
+    <div class="clearable-wrap">
+      <textarea id="input-desc" placeholder="Pegue aquí el texto de la descripción…" rows="7" oninput="toggleClearBtn(this)"></textarea>
+      <button class="clear-btn" onclick="clearableReset('input-desc', clearDesc)" tabindex="-1" title="Limpiar">✕</button>
+    </div>
+    <p class="hint">Se eliminan automáticamente etiquetas HTML (<code>&lt;p&gt;</code>, <code>&lt;div&gt;</code>, <code>&lt;br&gt;</code>, etc.) y entidades (<code>&amp;nbsp;</code>, <code>&amp;amp;</code>…). También se corrigen: tabulaciones, espacios múltiples, saltos de línea innecesarios y espacios antes de puntuación. Se marcan posibles errores ortográficos.</p>
+    <div class="btn-row">
+      <button class="btn-primary" onclick="formatDesc()">✦ Limpiar y revisar</button>
+      <button class="btn-secondary" onclick="clearDesc()">Limpiar</button>
+    </div>
+  </div>
+
+  <div class="card hidden" id="d-result-section">
+    <div class="section-label">Resultado <span style="font-weight:300;text-transform:none;letter-spacing:0;font-size:0.78rem">— clic para copiar</span></div>
+    <div class="result-box" onclick="copyBox('d-result-inner', this)" title="Clic para copiar">
+      <div class="result-desc-inner" id="d-result-inner"></div>
+      <span class="copy-hint">⧉ copiar</span>
+    </div>
+
+    <hr class="divider">
+    <div class="section-label">Correcciones aplicadas <span class="count" id="d-fix-count"></span></div>
+    <div id="d-fixes-container"></div>
+
+    <div id="d-spell-section" class="hidden" style="margin-top:1rem">
+      <hr class="divider">
+      <div class="section-label">Avisos ortográficos <span class="count" id="d-spell-count"></span></div>
+      <div id="d-spell-container"></div>
+    </div>
+
+    <div id="d-preview-section" class="hidden" style="margin-top:1.1rem">
+      <hr class="divider">
+      <div class="section-label">Vista marcada</div>
+      <div class="preview-box" id="d-preview-text"></div>
+    </div>
+
+    <div class="btn-row" style="margin-top:1rem">
+      <button class="btn-ghost" onclick="sendDescToInput()">↩ Editar resultado</button>
+    </div>
+  </div>
+
+</div>
+</div>
+
+<!-- ════════════════ TAB 3: FILIACIONES ════════════════ -->
+<div id="tab-fils" class="tab-panel">
+<div class="container">
+
+  <div class="card">
+    <label for="fil-name">Nombre y apellido del autor</label>
+    <div class="clearable-wrap">
+      <input type="text" id="fil-name" placeholder="Ej: Héctor Gil"
+        style="width:100%;padding:0.75rem 1rem;border:1.5px solid var(--border);border-radius:var(--radius);background:white;font-family:'Source Sans 3',sans-serif;font-size:0.97rem;color:var(--text);transition:border-color 0.2s;"
+        oninput="clearFilResult();toggleClearBtn(this)"
+        onkeydown="if(event.key==='Enter')formatFil()">
+      <button class="clear-btn" onclick="clearableReset('fil-name', clearFil)" tabindex="-1" title="Limpiar">✕</button>
+    </div>
+    <p class="hint">Ingresá el nombre completo tal como aparece (ej: <code>Héctor Gil</code> o <code>María José López Ruiz</code>). Se generará la filiación con el formato institucional estándar de la Biblioteca.</p>
+
+    <div style="margin-top:1.1rem;display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;">
+      <div>
+        <label for="fil-unidad" style="margin-bottom:0.3rem;">Unidad académica</label>
+        <select id="fil-unidad"
+          style="width:100%;padding:0.65rem 0.9rem;border:1.5px solid var(--border);border-radius:var(--radius);background:white;font-family:'Source Sans 3',sans-serif;font-size:0.93rem;color:var(--text);">
+          <option value="Facultad de Psicología">Facultad de Psicología</option>
+          <option value="Facultad de Arquitectura, Urbanismo y Diseño">Facultad de Arquitectura, Urbanismo y Diseño</option>
+          <option value="Facultad de Artes">Facultad de Artes</option>
+          <option value="Facultad de Ciencias Agropecuarias">Facultad de Ciencias Agropecuarias</option>
+          <option value="Facultad de Ciencias Económicas">Facultad de Ciencias Económicas</option>
+          <option value="Facultad de Ciencias Exactas, Físicas y Naturales">Facultad de Ciencias Exactas, Físicas y Naturales</option>
+          <option value="Facultad de Ciencias Médicas">Facultad de Ciencias Médicas</option>
+          <option value="Facultad de Ciencias Químicas">Facultad de Ciencias Químicas</option>
+          <option value="Facultad de Derecho y Ciencias Sociales">Facultad de Derecho y Ciencias Sociales</option>
+          <option value="Facultad de Filosofía y Humanidades">Facultad de Filosofía y Humanidades</option>
+          <option value="Facultad de Lenguas">Facultad de Lenguas</option>
+          <option value="Facultad de Matemática, Astronomía y Física">Facultad de Matemática, Astronomía y Física</option>
+          <option value="Facultad de Odontología">Facultad de Odontología</option>
+          <option value="otra-unc">Otra facultad UNC (escribir abajo)…</option>
+          <option value="otra-univ">Otra universidad (escribir abajo)…</option>
+          <option value="conicet">CONICET</option>
+        </select>
+      </div>
+      <div>
+        <label for="fil-pais" style="margin-bottom:0.3rem;">País</label>
+        <input type="text" id="fil-pais" value="Argentina"
+          style="width:100%;padding:0.65rem 0.9rem;border:1.5px solid var(--border);border-radius:var(--radius);background:white;font-family:'Source Sans 3',sans-serif;font-size:0.93rem;color:var(--text);">
+      </div>
+    </div>
+
+    <div id="fil-unidad-custom-wrap" class="hidden" style="margin-top:0.65rem;">
+      <label for="fil-unidad-custom" style="margin-bottom:0.3rem;" id="fil-unidad-custom-label">Unidad académica (texto libre)</label>
+      <input type="text" id="fil-unidad-custom" placeholder="Ej: Escuela de Trabajo Social"
+        style="width:100%;padding:0.65rem 0.9rem;border:1.5px solid var(--border);border-radius:var(--radius);background:white;font-family:'Source Sans 3',sans-serif;font-size:0.93rem;color:var(--text);">
+      <div id="fil-univ-extra-wrap" class="hidden" style="margin-top:0.5rem;">
+        <label for="fil-universidad-custom" style="margin-bottom:0.3rem;">Universidad</label>
+        <input type="text" id="fil-universidad-custom" placeholder="Ej: Universidad Nacional de Rosario"
+          style="width:100%;padding:0.65rem 0.9rem;border:1.5px solid var(--border);border-radius:var(--radius);background:white;font-family:'Source Sans 3',sans-serif;font-size:0.93rem;color:var(--text);">
+      </div>
+    </div>
+
+    <div id="fil-conicet-wrap" class="hidden" style="margin-top:0.65rem;">
+      <label for="fil-conicet-instituto" style="margin-bottom:0.3rem;">Instituto CONICET</label>
+      <input type="text" id="fil-conicet-instituto" placeholder="Ej: Instituto de Investigaciones Psicológicas (IIPsi)"
+        style="width:100%;padding:0.65rem 0.9rem;border:1.5px solid var(--border);border-radius:var(--radius);background:white;font-family:'Source Sans 3',sans-serif;font-size:0.93rem;color:var(--text);">
+      <p class="hint" style="margin-top:0.3rem;">La filiación incluirá: Instituto · Consejo Nacional de Investigaciones Científicas y Técnicas · País</p>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn-primary" onclick="formatFil()">✦ Generar filiación</button>
+      <button class="btn-secondary" onclick="clearFil()">Limpiar</button>
+    </div>
+  </div>
+
+  <!-- Paso intermedio: confirmar inversión -->
+  <div class="card hidden" id="fil-confirm-section">
+    <div class="section-label">Confirmá la inversión del nombre</div>
+    <p class="hint" style="margin-bottom:0.9rem;">Editá los campos si la separación nombre/apellido no es correcta, luego confirmá para generar la filiación.</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;">
+      <div>
+        <label for="fil-confirm-apellido" style="margin-bottom:0.3rem;">Apellido</label>
+        <input type="text" id="fil-confirm-apellido"
+          style="width:100%;padding:0.65rem 0.9rem;border:1.5px solid var(--border);border-radius:var(--radius);background:white;font-family:'Source Sans 3',sans-serif;font-size:0.97rem;color:var(--text);"
+          oninput="previewInversion()">
+      </div>
+      <div>
+        <label for="fil-confirm-nombre" style="margin-bottom:0.3rem;">Nombre</label>
+        <input type="text" id="fil-confirm-nombre"
+          style="width:100%;padding:0.65rem 0.9rem;border:1.5px solid var(--border);border-radius:var(--radius);background:white;font-family:'Source Sans 3',sans-serif;font-size:0.97rem;color:var(--text);"
+          oninput="previewInversion()">
+      </div>
+    </div>
+    <div style="margin-top:0.75rem;padding:0.6rem 0.9rem;background:var(--accent-muted);border-radius:var(--radius);font-size:0.9rem;color:var(--accent);">
+      Vista previa: <strong id="fil-preview-inv"></strong>
+    </div>
+    <div class="btn-row" style="margin-top:0.9rem;">
+      <button class="btn-primary" onclick="confirmFil()">✦ Confirmar y generar</button>
+      <button class="btn-ghost" onclick="hide('fil-confirm-section')">↩ Volver</button>
+    </div>
+  </div>
+
+  <!-- Resultado final -->
+  <div class="card hidden" id="fil-result-section">
+    <div class="section-label">Resultado <span style="font-weight:300;text-transform:none;letter-spacing:0;font-size:0.78rem">— clic para copiar</span></div>
+    <div class="result-box" onclick="copyBox('fil-result-inner', this)" title="Clic para copiar">
+      <div class="result-desc-inner" id="fil-result-inner" style="font-family:'Source Sans 3',sans-serif;font-size:1rem;"></div>
+      <span class="copy-hint">⧉ copiar</span>
+    </div>
+    <div class="btn-row" style="margin-top:1rem;">
+      <button class="btn-ghost" onclick="addAnotherFil()">✦ Agregar otro autor</button>
+      <button class="btn-ghost" onclick="openConfirm()" title="La separación nombre/apellido no es correcta">✎ Corregir inversión</button>
+    </div>
+  </div>
+
+  <!-- Acumulador de filiaciones generadas -->
+  <div class="card hidden" id="fil-batch-section">
+    <div class="section-label">Filiaciones generadas <span class="count" id="fil-batch-count"></span>
+      <button class="btn-ghost" onclick="copyAllFils()" style="margin-left:auto;font-size:0.78rem;padding:0.3rem 0.75rem;">⧉ Copiar todas</button>
+    </div>
+    <div id="fil-batch-list" style="display:flex;flex-direction:column;gap:0.4rem;"></div>
+    <div class="btn-row" style="margin-top:0.75rem;">
+      <button class="btn-ghost" onclick="clearAllFils()">✕ Limpiar lista</button>
+    </div>
+  </div>
+
+</div>
+</div>
+
+<!-- ════════════════ TAB 4: NOMBRES ════════════════ -->
+<div id="tab-nombres" class="tab-panel">
+<div class="container">
+
+  <div class="card">
+    <label for="nombres-input">Nombres a formatear</label>
+    <div class="clearable-wrap">
+      <textarea id="nombres-input" placeholder="Ej: Juan García, María López Martínez, Pedro Ramírez, Ana Gómez de la Torre" rows="5" oninput="toggleClearBtn(this); nombresLiveCount()"></textarea>
+      <button class="clear-btn" onclick="clearableReset('nombres-input', clearNombres)" tabindex="-1" title="Limpiar">✕</button>
+    </div>
+    <p class="hint">Ingresá varios nombres separados por comas. Se ordenarán uno por línea en formato <strong>Apellido, Nombre</strong> usando la misma detección inteligente de la herramienta de filiaciones.</p>
+    <div style="display:flex;align-items:center;gap:1rem;margin-top:0.75rem;flex-wrap:wrap;">
+      <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.82rem;text-transform:none;letter-spacing:0;font-weight:500;color:var(--text-muted);cursor:pointer;">
+        <input type="checkbox" id="nombres-sort" style="accent-color:var(--accent);width:14px;height:14px;">
+        Ordenar alfabéticamente por apellido
+      </label>
+    </div>
+    <div class="btn-row">
+      <button class="btn-primary" onclick="formatNombres()">✦ Formatear nombres</button>
+      <button class="btn-secondary" onclick="clearNombres()">Limpiar</button>
+    </div>
+  </div>
+
+  <div class="card hidden" id="nombres-result-section">
+    <div class="section-label">
+      Resultado
+      <span class="count" id="nombres-result-count"></span>
+      <span style="font-weight:300;text-transform:none;letter-spacing:0;font-size:0.78rem;margin-left:0.25rem;">— clic en cada nombre para copiar</span>
+    </div>
+    <div id="nombres-individual-boxes" style="display:flex;flex-direction:column;gap:0.4rem;"></div>
+
+    <div style="margin-top:1.1rem;">
+      <hr class="divider">
+
+      <!-- toolbar con label + botón invertir todos -->
+      <div class="nombres-toolbar">
+        <div class="section-label" style="margin-bottom:0;">Revisión individual</div>
+        <button class="btn-ghost" id="btn-swap-all" onclick="swapAllNombres()"
+          style="font-size:0.78rem;padding:0.32rem 0.75rem;margin-left:auto;"
+          title="Invertir nombre↔apellido en todas las filas">
+          ⇄ Invertir todos
+        </button>
+      </div>
+
+      <p class="hint" style="margin-bottom:0.75rem;">Usá <strong>⇄</strong> en cada fila para intercambiar nombre y apellido con un clic. El resultado se actualiza al instante.</p>
+      <div id="nombres-rows" style="display:flex;flex-direction:column;gap:0.45rem;"></div>
+    </div>
+
+    <div class="btn-row" style="margin-top:1rem;">
+      <button class="btn-ghost" onclick="copyAllNombres()">⧉ Copiar todos</button>
+      <button class="btn-ghost" onclick="clearNombres()">↩ Nuevo</button>
+    </div>
+  </div>
+
+</div>
+</div>
+
+<!-- ════════════════ TAB 5: A/a ════════════════ -->
+<div id="tab-mayus" class="tab-panel">
+<div class="container">
+
+  <div class="card">
+    <label for="mayus-input">Texto a convertir</label>
+    <div class="clearable-wrap">
+      <textarea id="mayus-input" placeholder="Pegá aquí el texto…" rows="7" oninput="toggleClearBtn(this)"></textarea>
+      <button class="clear-btn" onclick="clearableReset('mayus-input', clearMayus)" tabindex="-1" title="Limpiar">✕</button>
+    </div>
+    <div class="btn-row">
+      <button class="btn-primary" onclick="convertMayus('lower')">minúsculas</button>
+      <button class="btn-primary" onclick="convertMayus('upper')">MAYÚSCULAS</button>
+      <button class="btn-primary" onclick="convertMayus('sentence')">Oración</button>
+      <button class="btn-secondary" onclick="clearMayus()">Limpiar</button>
+    </div>
+    <p class="hint" style="margin-top:0.65rem;"><strong>Oración</strong>: mayúscula solo al inicio y después de cada punto.</p>
+  </div>
+
+  <div class="card hidden" id="mayus-result-section">
+    <div class="section-label">Resultado <span style="font-weight:300;text-transform:none;letter-spacing:0;font-size:0.78rem">— clic para copiar</span></div>
+    <div class="result-box" onclick="copyBox('mayus-result-inner', this)" title="Clic para copiar">
+      <div class="result-desc-inner" id="mayus-result-inner" style="font-family:'Source Sans 3',sans-serif;font-size:1rem;"></div>
+      <span class="copy-hint">⧉ copiar</span>
+    </div>
+    <div class="btn-row" style="margin-top:1rem;">
+      <button class="btn-ghost" onclick="sendMayusToInput()">↩ Editar resultado</button>
+    </div>
+  </div>
+
+</div>
+</div>
+
+<div id="toast"></div>
+
+<footer>Herramienta local · sin conexión requerida · datos no enviados a ningún servidor</footer>
+
+<script>
+// ══════════════════════════════════════════════════════════
+//  DATA
+// ══════════════════════════════════════════════════════════
+
+const LOWER_ALWAYS = new Set([
+  'a','al','ante','bajo','cabe','con','contra','de','del','desde','durante',
+  'en','entre','hacia','hasta','mediante','para','por','pro','según','sin',
+  'so','sobre','tras','versus','vía',
+  'e','ni','o','u','y',
+  'el','la','los','las','un','una','unos','unas',
+  'que','si','como','cuando','donde','aunque','porque','sino','pero','mas',
+  'lo','le','les','me','te','se','nos','os',
+  'este','esta','estos','estas','ese','esa','esos','esas','aquel','aquella',
+  'cuyo','cuya','cuyos','cuyas',
+]);
+
+const KNOWN_ABBREV = new Set(['ISBN','ISSN','DOI','URL','PDF','ONU','OMS',
+  'UNESCO','UNICEF','OEA','OIT','UE','USA','EEUU']);
+
+const ACCENT_PAIRS = [
+  ['analisis','análisis'],['metodo','método'],['metodologia','metodología'],
+  ['investigacion','investigación'],['educacion','educación'],
+  ['formacion','formación'],['evaluacion','evaluación'],
+  ['profesion','profesión'],['gestion','gestión'],['relacion','relación'],
+  ['situacion','situación'],['aplicacion','aplicación'],['percepcion','percepción'],
+  ['caracteristicas','características'],['pedagogico','pedagógico'],
+  ['academico','académico'],['teorico','teórico'],['practico','práctico'],
+  ['publico','público'],['historico','histórico'],['juridico','jurídico'],
+  ['psicologico','psicológico'],['sociologico','sociológico'],
+  ['filosofico','filosófico'],['linguistico','lingüístico'],
+  ['matematico','matemático'],['economico','económico'],
+  ['politico','político'],['artistico','artístico'],['estetico','estético'],
+  ['tecnico','técnico'],['etnico','étnico'],['cientifico','científico'],
+  ['bibliografico','bibliográfico'],['demografico','demográfico'],
+  ['comunicacion','comunicación'],['interaccion','interacción'],
+  ['produccion','producción'],['construccion','construcción'],
+  ['presentacion','presentación'],['conclusion','conclusión'],
+  ['introduccion','introducción'],['revision','revisión'],
+  ['comprension','comprensión'],['atencion','atención'],
+  ['ambito','ámbito'],['indice','índice'],['termino','término'],
+  ['numero','número'],['area','área'],['linea','línea'],
+  ['unico','único'],['basico','básico'],['logico','lógico'],
+  ['musica','música'],['fisica','física'],['quimica','química'],
+  ['informatica','informática'],['electronica','electrónica'],
+  ['practicas','prácticas'],
+];
+
+// ══════════════════════════════════════════════════════════
+//  TAB SWITCHING
+// ══════════════════════════════════════════════════════════
+
+function switchTab(id, btn) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + id).classList.add('active');
+  btn.classList.add('active');
+}
+
+// ══════════════════════════════════════════════════════════
+//  TITLE FORMATTER
+// ══════════════════════════════════════════════════════════
+
+function capitalize(word) {
+  let m = word.match(/^([¿¡"«(]*)(.*)$/);
+  let pre = m[1], rest = m[2];
+  if (!rest) return word;
+  return pre + rest.charAt(0).toUpperCase() + rest.slice(1).toLowerCase();
+}
+
+function toSentenceCase(text) {
+  let tokens = text.trim().split(/(\s+)/);
+  let wi = 0;
+  return tokens.map(tok => {
+    if (/^\s+$/.test(tok)) return tok;
+    let r = wi === 0 ? capitalize(tok) : tok.toLowerCase();
+    wi++;
+    return r;
+  }).join('');
+}
+
+function splitTitleSubtitle(raw) {
+  for (let sep of [/ : /, / – /, / — /, / - /]) {
+    let idx = raw.search(sep);
+    if (idx > 5) {
+      let m = raw.match(sep);
+      return { title: raw.slice(0, idx).trim(), subtitle: raw.slice(idx + m[0].length).trim() };
+    }
+  }
+  let dotM = raw.match(/^(.+?)\.\s+([A-ZÁÉÍÓÚÜÑ].+)$/);
+  if (dotM && dotM[1].length > 5)
+    return { title: dotM[1].trim(), subtitle: dotM[2].trim() };
+  let ci = raw.indexOf(':');
+  if (ci > 5)
+    return { title: raw.slice(0, ci).trim(), subtitle: raw.slice(ci + 1).trim() };
+  return { title: raw.trim(), subtitle: '' };
+}
+
+function formatTitle() {
+  let raw = document.getElementById('input-title').value.trim();
+  if (!raw) { alert('Ingresa un título para formatear.'); return; }
+
+  let { title, subtitle } = splitTitleSubtitle(raw);
+  let fTitle = toSentenceCase(title);
+  let fSub   = subtitle ? toSentenceCase(subtitle) : '';
+  if (fSub) fSub = fSub.charAt(0).toLowerCase() + fSub.slice(1);
+
+  let full = fTitle + (fSub ? ' : ' + fSub : '');
+
+  let titleFixes = [];
+  if (/\.$/.test(full)) {
+    full = full.replace(/\.$/, '');
+    titleFixes.push({ type:'error', msg:'Punto final eliminado',
+      detail:'Los titulos academicos no deben terminar en punto.' });
+  }
+
+  document.getElementById('t-result-inner').textContent = full;
+
+  let issues = titleFixes.concat(runTitleChecks(full, fSub));
+  renderIssues('t', issues, full, 'title');
+
+  show('t-result-section');
+  document.getElementById('t-result-section').scrollIntoView({ behavior:'smooth', block:'nearest' });
+}
+
+function runTitleChecks(full, fSub) {
+  let issues = [];
+
+  if (fSub && /^[A-ZÁÉÍÓÚÜÑ]/.test(fSub)) {
+    let fw = fSub.split(' ')[0].toLowerCase().replace(/[^a-záéíóúüñ]/g,'');
+    if (!LOWER_ALWAYS.has(fw))
+      issues.push({ type:'warning', word: fSub.split(' ')[0],
+        msg:'Primera palabra del subtítulo en mayúscula',
+        detail:'Debería ir en minúscula salvo que sea nombre propio.' });
+  }
+
+  let caps = (full.match(/\b[A-ZÁÉÍÓÚÜÑ]{3,}\b/g)||[]).filter(w=>!KNOWN_ABBREV.has(w));
+  if (caps.length)
+    issues.push({ type:'warning', word:caps[0],
+      msg:`Palabras en mayúsculas: ${[...new Set(caps)].slice(0,3).join(', ')}`,
+      detail:'Verifique si son siglas o si deben normalizarse.' });
+
+  issues.push(...accentChecks(full));
+
+  if (/  /.test(full))
+    issues.push({ type:'error', word:null, msg:'Espacios dobles',
+      detail:'Hay espacios consecutivos en el título.' });
+
+  if (/[!?;]$/.test(full.trim()))
+    issues.push({ type:'warning', word:null, msg:'Puntuación al final',
+      detail:'Los títulos académicos no suelen terminar con signos de puntuación.' });
+
+  let words = full.split(/\s+/);
+  let suspicious = [];
+  let afterColon = false;
+  words.forEach((w, i) => {
+    if (w === ':') { afterColon = true; return; }
+    let isFirst = i === 0 || (afterColon && words[i-1] === ':');
+    if (afterColon && words[i-1] === ':') afterColon = false;
+    if (!isFirst && /^[A-ZÁÉÍÓÚÜÑ]/.test(w)) {
+      let clean = w.replace(/[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ]/g,'');
+      if (!/^[IVXLCDM]+$/.test(clean) && clean.length > 1 && !KNOWN_ABBREV.has(clean))
+        suspicious.push(w.replace(/[.,;:!?]/g,''));
+    }
+  });
+  if (suspicious.length) {
+    let shown = [...new Set(suspicious)].slice(0,4);
+    issues.push({ type:'info', word:shown[0],
+      msg:`Posibles nombres propios o mayúsculas inesperadas: ${shown.join(', ')}`,
+      detail:'Si son nombres propios es correcto; si no, deberían ir en minúscula.' });
+  }
+
+  if (full.length > 180)
+    issues.push({ type:'info', word:null, msg:'Título muy extenso',
+      detail:`${full.length} caracteres. Algunos sistemas limitan a 150–180.` });
+
+  return issues;
+}
+
+function clearTitle() {
+  document.getElementById('input-title').value = '';
+  hide('t-result-section');
+  document.getElementById('input-title').focus();
+}
+
+function sendTitleToInput() {
+  document.getElementById('input-title').value = document.getElementById('t-result-inner').textContent;
+  hide('t-result-section');
+  document.getElementById('input-title').focus();
+}
+
+// ══════════════════════════════════════════════════════════
+//  DESCRIPTION FORMATTER
+// ══════════════════════════════════════════════════════════
+
+function formatDesc() {
+  let raw = document.getElementById('input-desc').value;
+  if (!raw.trim()) { alert('Ingresa una descripción para procesar.'); return; }
+
+  let fixes = [];
+  let text = raw;
+
+  // Decodificar entidades HTML (&#945;, &#61;, &eacute;, etc.) usando el DOM
+  (function() {
+    let ta = document.createElement('textarea');
+    ta.innerHTML = text;
+    let decoded = ta.value;
+    if (decoded !== text) {
+      fixes.push({ type:'error', msg:'Entidades HTML decodificadas',
+        detail:'Se convirtieron códigos como &#945; o &amp; a sus caracteres reales.' });
+      text = decoded;
+    }
+  })();
+
+  let hasHTML = /<[a-z][^>]*>/i.test(text) || /<!--/.test(text);
+  if (hasHTML) {
+    let stripped = text
+      .replace(/<!--\[if[^\]]*\]>[\s\S]*?<!\[endif\]-->/gi, '')
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<xml[\s\S]*?<\/xml>/gi, '')
+      .replace(/<object[\s\S]*?<\/object>/gi, '')
+      .replace(/<img[^>]*src=["']file:\/\/[^"']*["'][^>]*\/?>/gi, '')
+      .replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_, inner) => inner.trim() + '. ')
+      .replace(/<\/(p|div|h[1-6]|tr|blockquote|ul|ol)>/gi, ' ')
+      .replace(/<br\s*\/?>/gi, ' ')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&amp;/gi, '&')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/gi, "'")
+      .replace(/&apos;/gi, "'")
+      .replace(/[\r\n\t]+/g, ' ')
+      .replace(/ {2,}/g, ' ')
+      .trim();
+    fixes.push({ type:'error', msg:'HTML de Word limpiado',
+      detail:'Se eliminaron comentarios condicionales, bloques de estilo, XML, objetos embebidos y todas las etiquetas HTML.' });
+    text = stripped;
+  }
+
+  if (/\t/.test(text)) {
+    fixes.push({ type:'error', msg:'Tabulaciones eliminadas',
+      detail:'Se reemplazaron todas las tabulaciones por un espacio.' });
+    text = text.replace(/\t/g, ' ');
+  }
+
+  text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+  if (/\n/.test(text)) {
+    fixes.push({ type:'error', msg:'Saltos de línea eliminados',
+      detail:'Se eliminaron todos los saltos de línea y se unió el texto en un único párrafo.' });
+    text = text.replace(/\n+/g, ' ');
+  }
+
+  if (/[^\S\n]{2,}/.test(text)) {
+    fixes.push({ type:'error', msg:'Espacios múltiples corregidos',
+      detail:'Se redujeron grupos de dos o más espacios consecutivos a un único espacio.' });
+    text = text.replace(/[^\S\n]{2,}/g, ' ');
+  }
+
+  // Corregir ?texto? → "texto" ANTES de los pasos de puntuación,
+  // porque esos pasos rompen el patrón (eliminan espacio antes de ? o agregan espacio después)
+  const qmarkRe = /\?([^?]{1,80}?)\?/g;
+  if (qmarkRe.test(text)) {
+    fixes.push({ type:'error', msg:'Signos "?" convertidos a comillas',
+      detail:'Se reemplazaron pares de signos de interrogación (?así?) por comillas tipográficas ("así").' });
+    text = text.replace(/\?([^?]{1,80}?)\?/g, '\u201c$1\u201d');
+  }
+
+  if (/ [.,;:]/.test(text)) {
+    fixes.push({ type:'error', msg:'Espacios antes de puntuación eliminados',
+      detail:'Se encontraron y eliminaron espacios antes de signos de puntuación (. , ; :).' });
+    text = text.replace(/ ([.,;:])/g, '$1');
+  }
+
+  const missingSpaceRe = /([.,;:!?])([a-záéíóúüñA-ZÁÉÍÓÚÜÑ])/g;
+  if (missingSpaceRe.test(text)) {
+    fixes.push({ type:'error', msg:'Espacios faltantes tras puntuación corregidos',
+      detail:'Se insertó un espacio después de signos de puntuación que iban pegados a la siguiente palabra.' });
+    text = text.replace(/([.,;:!?])([a-záéíóúüñA-ZÁÉÍÓÚÜÑ])/g, '$1 $2');
+  }
+
+  text = text.trim();
+
+  document.getElementById('d-result-inner').textContent = text;
+
+  let fixContainer = document.getElementById('d-fixes-container');
+  let fixCount = document.getElementById('d-fix-count');
+  if (fixes.length === 0) {
+    fixContainer.innerHTML = '<div class="no-issues">✓ No se aplicaron correcciones de formato.</div>';
+    fixCount.textContent = '';
+  } else {
+    fixCount.textContent = `— ${fixes.length} corrección${fixes.length > 1 ? 'es' : ''}`;
+    fixContainer.innerHTML = issueListHTML(fixes);
+  }
+
+  let spellIssues = runSpellChecks(text);
+  let spellSec = document.getElementById('d-spell-section');
+  let spellCon = document.getElementById('d-spell-container');
+  let spellCount = document.getElementById('d-spell-count');
+  if (spellIssues.length === 0) {
+    hide('d-spell-section');
+  } else {
+    spellCount.textContent = `— ${spellIssues.length} aviso${spellIssues.length > 1 ? 's' : ''}`;
+    spellCon.innerHTML = issueListHTML(spellIssues);
+    show('d-spell-section');
+  }
+
+  let hadQmarkFix = /[\u201c\u201d]/.test(text);
+  buildDescPreview(text, spellIssues, hadQmarkFix);
+
+  show('d-result-section');
+  document.getElementById('d-result-section').scrollIntoView({ behavior:'smooth', block:'nearest' });
+}
+
+function runSpellChecks(text) {
+  let issues = [];
+  issues.push(...accentChecks(text));
+
+  // Detectar signos de interrogación residuales pegados a texto (no convertidos por el par ?...?)
+  let suspQmarks = [];
+  let m2 = text.match(/[A-Za-záéíóúüñÁÉÍÓÚÜÑ]\?[A-Za-záéíóúüñÁÉÍÓÚÜÑ]/g);
+  if (m2) suspQmarks.push(...m2);
+
+  if (suspQmarks.length) {
+    issues.push({ type:'warning', word: null,
+      msg:`Posibles "?" residuales pegados a texto: ${suspQmarks.length} caso${suspQmarks.length>1?'s':''}`,
+      detail:'Se detectaron signos de interrogación pegados a palabras que no formaban un par ?...? reconocible. Revisá manualmente.' });
+  }
+
+  let caps = (text.match(/\b[A-ZÁÉÍÓÚÜÑ]{4,}\b/g)||[]).filter(w=>!KNOWN_ABBREV.has(w));
+  if (caps.length)
+    issues.push({ type:'warning', word:caps[0],
+      msg:`Posibles siglas o palabras en mayúsculas: ${[...new Set(caps)].slice(0,3).join(', ')}`,
+      detail:'Verifique si son siglas conocidas o si deben normalizarse.' });
+
+  let rep = text.match(/\b(\w{2,})\s+\1\b/gi);
+  if (rep)
+    issues.push({ type:'error', word:rep[0].split(' ')[0],
+      msg:`Palabra repetida: "${rep[0]}"`,
+      detail:'Se detectó una palabra duplicada consecutiva.' });
+
+  let qO = (text.match(/«/g)||[]).length, qC = (text.match(/»/g)||[]).length;
+  if (qO !== qC)
+    issues.push({ type:'warning', word:null, msg:'Comillas angulares desbalanceadas',
+      detail:`${qO} « vs ${qC} ». Verifique el uso de comillas.` });
+
+  let pO = (text.match(/\(/g)||[]).length, pC = (text.match(/\)/g)||[]).length;
+  if (pO !== pC)
+    issues.push({ type:'warning', word:null, msg:'Paréntesis desbalanceados',
+      detail:`${pO} abiertos vs ${pC} cerrados.` });
+
+  return issues;
+}
+
+function buildDescPreview(text, issues, hadQmarkFix) {
+  if (issues.length === 0 && !hadQmarkFix) { hide('d-preview-section'); return; }
+  let wordFlags = {};
+  for (let iss of issues) { if (iss.word) wordFlags[iss.word.toLowerCase()] = iss.type; }
+  let flagged = Object.keys(wordFlags).filter(w => w.length > 1);
+  flagged.sort((a,b) => b.length - a.length);
+  let html = escHtml(text);
+  for (let w of flagged) {
+    let cls = wordFlags[w] === 'error' ? 'hl-error' : 'hl-warning';
+    html = html.replace(new RegExp('(' + escRegex(escHtml(w)) + ')', 'gi'),
+      `<mark class="${cls}">$1</mark>`);
+  }
+  // Marcar bloques entre comillas tipográficas convertidas (resultado de ?texto? → "texto")
+  html = html.replace(/(\u201c[^\u201d]{1,80}\u201d)/g, '<mark class="hl-qfix">$1</mark>');
+  // Marcar signos de pregunta residuales sueltos pegados a letras
+  html = html.replace(/\?([A-Za-záéíóúüñÁÉÍÓÚÜÑ])/g, '<mark class="hl-warning">?</mark>$1');
+  html = html.replace(/([A-Za-záéíóúüñÁÉÍÓÚÜÑ])\?/g, '$1<mark class="hl-warning">?</mark>');
+  document.getElementById('d-preview-text').innerHTML = html;
+  show('d-preview-section');
+}
+
+function clearDesc() {
+  document.getElementById('input-desc').value = '';
+  hide('d-result-section');
+  document.getElementById('input-desc').focus();
+}
+
+function sendDescToInput() {
+  document.getElementById('input-desc').value = document.getElementById('d-result-inner').textContent;
+  hide('d-result-section');
+  document.getElementById('input-desc').focus();
+}
+
+// ══════════════════════════════════════════════════════════
+//  SHARED
+// ══════════════════════════════════════════════════════════
+
+function accentChecks(text) {
+  let issues = [];
+  let lower = text.toLowerCase();
+  for (let [wrong, correct] of ACCENT_PAIRS) {
+    let wrongRe   = new RegExp('\\b' + escRegex(wrong) + '\\b', 'i');
+    let correctRe = new RegExp('\\b' + escRegex(correct) + '\\b', 'i');
+    if (wrongRe.test(lower) && !correctRe.test(lower)) {
+      let m = text.match(new RegExp('\\b' + escRegex(wrong) + '\\b', 'i'));
+      if (m)
+        issues.push({ type:'error', word:m[0],
+          msg:`Posible tilde faltante: "${m[0].trim()}"`,
+          detail:`¿Debería ser "${correct.trim()}"? Verifique el acento ortográfico.` });
+    }
+  }
+  return issues;
+}
+
+function renderIssues(prefix, issues, fullText, mode) {
+  let container = document.getElementById(prefix + '-issues-container');
+  let countEl   = document.getElementById(prefix + '-issue-count');
+  let prevSec   = document.getElementById(prefix + '-preview-section');
+  let prevEl    = document.getElementById(prefix + '-preview-text');
+
+  if (issues.length === 0) {
+    container.innerHTML = '<div class="no-issues">✓ No se detectaron problemas ortográficos ni de formato.</div>';
+    countEl.textContent = '';
+    hide(prefix + '-preview-section');
+    return;
+  }
+
+  let errors = issues.filter(i=>i.type==='error').length;
+  let warns  = issues.filter(i=>i.type==='warning').length;
+  countEl.textContent = `— ${issues.length} aviso${issues.length>1?'s':''} (${errors} error${errors!==1?'es':''}, ${warns} advertencia${warns!==1?'s':''})`;
+  container.innerHTML = issueListHTML(issues);
+
+  let wordFlags = {};
+  for (let iss of issues) { if (iss.word) wordFlags[iss.word.toLowerCase()] = iss.type; }
+  let flagged = Object.keys(wordFlags).filter(w=>w.length>1);
+  flagged.sort((a,b)=>b.length-a.length);
+  let html = escHtml(fullText);
+  for (let w of flagged) {
+    let cls = wordFlags[w]==='error' ? 'hl-error' : 'hl-warning';
+    html = html.replace(new RegExp('('+escRegex(escHtml(w))+')', 'gi'), `<mark class="${cls}">$1</mark>`);
+  }
+  prevEl.innerHTML = html;
+  show(prefix + '-preview-section');
+}
+
+function issueListHTML(issues) {
+  let html = '<div class="issues-list">';
+  for (let iss of issues) {
+    let icon = iss.type==='error' ? '✕' : iss.type==='warning' ? '⚠' : 'ℹ';
+    html += `<div class="issue-item issue-${iss.type}">
+      <span class="issue-icon">${icon}</span>
+      <div class="issue-text"><strong>${escHtml(iss.msg)}</strong><span>${escHtml(iss.detail)}</span></div>
+    </div>`;
+  }
+  return html + '</div>';
+}
+
+function copyBox(innerId, boxEl) {
+  let text = document.getElementById(innerId).textContent;
+  let inner = document.getElementById(innerId);
+  navigator.clipboard.writeText(text).catch(() => {
+    let ta = document.createElement('textarea');
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); document.body.removeChild(ta);
+  });
+  inner.classList.add('copied');
+  setTimeout(() => inner.classList.remove('copied'), 900);
+  showToast('¡Copiado al portapapeles!');
+}
+
+function show(id) { document.getElementById(id).classList.remove('hidden'); }
+function hide(id) { document.getElementById(id).classList.add('hidden'); }
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function escRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'); }
+
+function showToast(msg) {
+  let t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => t.classList.remove('show'), 2000);
+}
+
+// ══════════════════════════════════════════════════════════
+//  FILIACIONES
+// ══════════════════════════════════════════════════════════
+
+let filBatch = [];
+
+document.getElementById('fil-unidad').addEventListener('change', function() {
+  if (this.value === 'otra-unc') {
+    show('fil-unidad-custom-wrap');
+    hide('fil-univ-extra-wrap');
+    hide('fil-conicet-wrap');
+    document.getElementById('fil-unidad-custom-label').textContent = 'Unidad académica (texto libre)';
+    document.getElementById('fil-unidad-custom').placeholder = 'Ej: Escuela de Trabajo Social';
+  } else if (this.value === 'otra-univ') {
+    show('fil-unidad-custom-wrap');
+    show('fil-univ-extra-wrap');
+    hide('fil-conicet-wrap');
+    document.getElementById('fil-unidad-custom-label').textContent = 'Facultad / Departamento';
+    document.getElementById('fil-unidad-custom').placeholder = 'Ej: Facultad de Derecho';
+  } else if (this.value === 'conicet') {
+    hide('fil-unidad-custom-wrap');
+    show('fil-conicet-wrap');
+    document.getElementById('fil-conicet-instituto').focus();
+  } else {
+    hide('fil-unidad-custom-wrap');
+    hide('fil-conicet-wrap');
+  }
+});
+
+const NOMBRES_CONOCIDOS = new Set([
+  'aaron','abigail','abraham','ada','adela','adelina','adolfo','adriana','adriano',
+  'agostina','agustin','agustina','alan','alba','alberto','alejandra','alejandro',
+  'alejo','alessia','alex','alexa','alexia','alexis','alfonso','alfredo','alicia',
+  'alina','alma','alvaro','amalia','amanda','amelia','amparo','ana','anabel',
+  'andrea','andres','angel','angela','angelica','anibal','anita','antonella',
+  'antonia','antonio','ariadna','ariana','ariel','arnaldo','arturo','augusto',
+  'aurora','axel','ayelen','ayelen','azul',
+  'barbara','beatriz','belen','benjamin','bernardo','bianca','blanca','boris',
+  'brenda','brian','brigitte','bruno',
+  'camila','camilo','carla','carlo','carlos','carolina','catalina','cecilia',
+  'celeste','celia','cesar','cielo','clara','claudia','claudio','clementina',
+  'constanza','corina','cristian','cristiana','cristina','cynthia',
+  'damian','daniel','daniela','dante','dario','david','debora','diego','dolores',
+  'domingo','diana','dylan',
+  'edgar','eduardo','elena','eleonora','eliana','elisabet','elizabeth','emilia',
+  'emiliano','emilio','emma','ernesto','esperanza','esteban','estela','eugenia',
+  'eugenio','eva','evangelina','ezequiel','elisa','elsa','elvira','enrique',
+  'fabian','facundo','fatima','federico','felicitas','felipe','fernanda','fernando',
+  'flavia','florencia','francisco','franco','frida',
+  'gabriela','gabriel','gaston','gerardo','german','gimena','gonzalo','graciela',
+  'guadalupe','guillermo','gustavo',
+  'hector','hernan','horacio','hugo',
+  'ignacio','ines','irene','isabel','ivan',
+  'jacqueline','javier','jazmin','jennifer','jessica','jesus','jimena','joaquin',
+  'johanna','jonathan','jorge','jose','josefina','juan','juana','julia','julian',
+  'juliana','julieta',
+  'karen','karina','kevin',
+  'laura','laureana','leandro','leonel','leandro','leticia','liliana','lorena',
+  'lourdes','lucia','luciana','luciano','luis','luisa','luna','luz','lautaro',
+  'leila','lola',
+  'magali','magaly','magdalena','manuel','manuela','marcela','marcelo','marcos',
+  'margarita','maria','mariana','mariano','mario','marisol','martin','martina',
+  'mateo','matias','mauricio','mauro','maximiliano','maximiliana','maya','melina',
+  'melissa','mercedes','micaela','miguel','milagros','miriam','monica','mirta',
+  'marta','maite','malena','malen',
+  'nahuel','nancy','natalia','natasha','nelson','nestor','nicolas','nicolasa',
+  'noelia','noemi','norma','nora','nadia','nahir',
+  'olivia','omar','oscar',
+  'pablo','paola','patricia','paula','pedro','pilar','piero','priscila','pamela',
+  'ramiro','ramon','raquel','raul','rebeca','renata','ricardo','roberto','rocio',
+  'rodrigo','romina','rosa','rosana','ruben','ruth','romero','rafael',
+  'sabrina','samuel','sandra','santiago','sara','sebastian','silvia','silvana',
+  'sofia','soledad','stella','susana','sergio','sol',
+  'tamara','tomas','trinidad','tatiana','teresa',
+  'valentina','valeria','vanesa','vanessa','veronica','victor','victoria',
+  'virginia','viviana',
+  'walter','wanda',
+  'yamila','yanina','yesica','yael',
+  'zoe','zulemita','zulema',
+  'abril','alan','aldana','aldana','alejo','alexia','alonso','alvaro','amaya',
+  'analia','analia','anibal','araceli','armando','aranza','augustina','azucena',
+  'baltazar','bautista','berenice','brisa','candela','carina','carola','celina',
+  'cintia','clara','clarita','clorinda','delfina','delicia','desiree','elba',
+  'elena','elisa','elizabet','elvira','enrique','estefania','estela','eugenia',
+  'ezequiel','fabricio','felisa','fenix','fermin','fiorella','franco','frederic',
+  'froilan','fuensanta','gema','gisela','gladys','glenda','griselda','guadalupe',
+  'haydee','ignacia','imelda','ingrid','inti','iris','isadora','isadora','isolda',
+  'itzel','jacinta','jael','jaqueline','jasmine','javiera','joaquina','josefina',
+  'josue','jovana','juanita','judith','julissa','justina','kendra','kristel',
+  'laurita','lavinia','leda','leila','lena','leonora','lila','lilian','lina',
+  'lisandro','lisette','loreto','lucrecia','ludmila','lupe','lurdes','luz',
+  'maciel','maela','mailen','malvina','manon','marce','marciana','marcos','marelu',
+  'margot','maricel','mariela','marina','marinela','marisa','maritza','marlene',
+  'marlen','maru','matilde','maxima','mayte','melanie','melany','melisa','meritxell',
+  'milena','mili','mirna','modesta','moira','muriel','nadia','nadine','nahia',
+  'narcisa','nathalia','natividad','nayeli','nilda','noelia','nora','norelia',
+  'ofelia','olga','olimpia','oriana','pamela','paola','pastora','paz','penelope',
+  'petra','piedad','pilar','pia','priscila','prudencia','rafaela','ramona',
+  'rebeca','regine','renata','rene','reyes','rita','romelia','rosaura','roxana',
+  'sabina','salome','sasha','selena','serena','silvina','simona','sonia','soraya',
+  'stephania','sylvia','talia','tania','tanya','tatiana','tere','tita','tomasa',
+  'trinidad','ulises','ursula','valentino','valeria','vanina','vera','veronica',
+  'virginia','vivian','wanda','xime','ximena','yolanda','zara','zaira',
+]);
+
+function splitNameParts(fullName) {
+  if (fullName.includes(',')) {
+    let [apellido, ...resto] = fullName.split(',');
+    return { apellido: apellido.trim(), nombre: resto.join(',').trim() };
+  }
+
+  let parts = fullName.trim().replace(/\s+/g, ' ').split(' ');
+  if (parts.length === 1) return { apellido: parts[0], nombre: '' };
+  if (parts.length === 2) {
+    return { nombre: parts[0], apellido: parts[1] };
+  }
+
+  let nombreCount = 0;
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (NOMBRES_CONOCIDOS.has(parts[i].toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,''))) {
+      nombreCount = i + 1;
+    } else {
+      break;
+    }
+  }
+  if (nombreCount === 0) nombreCount = parts.length >= 4 ? parts.length - 2 : 1;
+
+  return {
+    nombre:   parts.slice(0, nombreCount).join(' '),
+    apellido: parts.slice(nombreCount).join(' '),
+  };
+}
+
+function formatFil() {
+  let raw = document.getElementById('fil-name').value.trim();
+  if (!raw) { alert('Ingresá un nombre y apellido.'); return; }
+
+  let { apellido, nombre } = splitNameParts(raw);
+  document.getElementById('fil-confirm-apellido').value = apellido;
+  document.getElementById('fil-confirm-nombre').value = nombre;
+  previewInversion();
+
+  let result = buildAndShowFil(apellido, nombre);
+  if (result) addFilToBatch(result);
+}
+
+function buildAndShowFil(apellido, nombre) {
+  let unidadSel = document.getElementById('fil-unidad').value;
+  let unidad, universidad;
+
+  if (unidadSel === 'otra-unc') {
+    unidad = document.getElementById('fil-unidad-custom').value.trim();
+    universidad = 'Universidad Nacional de Córdoba';
+    if (!unidad) { alert('Ingresá la unidad académica.'); return; }
+  } else if (unidadSel === 'otra-univ') {
+    unidad = document.getElementById('fil-unidad-custom').value.trim();
+    universidad = document.getElementById('fil-universidad-custom').value.trim();
+    if (!unidad) { alert('Ingresá la facultad o departamento.'); return; }
+    if (!universidad) { alert('Ingresá el nombre de la universidad.'); return; }
+  } else if (unidadSel === 'conicet') {
+    let instituto = document.getElementById('fil-conicet-instituto').value.trim();
+    universidad = 'Consejo Nacional de Investigaciones Científicas y Técnicas';
+    let pais = document.getElementById('fil-pais').value.trim() || 'Argentina';
+    let inv  = nombre ? `${apellido}, ${nombre}` : apellido;
+    let result = instituto
+      ? `Fil: ${inv}. ${instituto}. ${universidad}; ${pais}.`
+      : `Fil: ${inv}. ${universidad}; ${pais}.`;
+    document.getElementById('fil-result-inner').textContent = result;
+    hide('fil-confirm-section');
+    show('fil-result-section');
+    document.getElementById('fil-result-section').scrollIntoView({ behavior:'smooth', block:'nearest' });
+    return result;
+  } else {
+    unidad = unidadSel;
+    universidad = 'Universidad Nacional de Córdoba';
+  }
+
+  let pais = document.getElementById('fil-pais').value.trim() || 'Argentina';
+  let inv  = nombre ? `${apellido}, ${nombre}` : apellido;
+  let result = `Fil: ${inv}. ${universidad}. ${unidad}; ${pais}.`;
+
+  document.getElementById('fil-result-inner').textContent = result;
+  hide('fil-confirm-section');
+  show('fil-result-section');
+  document.getElementById('fil-result-section').scrollIntoView({ behavior:'smooth', block:'nearest' });
+
+  return result;
+}
+
+function openConfirm() {
+  show('fil-confirm-section');
+  document.getElementById('fil-confirm-section').scrollIntoView({ behavior:'smooth', block:'nearest' });
+  document.getElementById('fil-confirm-apellido').focus();
+}
+
+function previewInversion() {
+  let ap = document.getElementById('fil-confirm-apellido').value.trim();
+  let no = document.getElementById('fil-confirm-nombre').value.trim();
+  let inv = ap && no ? `${ap}, ${no}` : ap || no;
+  document.getElementById('fil-preview-inv').textContent = inv || '—';
+}
+
+function confirmFil() {
+  let apellido = document.getElementById('fil-confirm-apellido').value.trim();
+  let nombre   = document.getElementById('fil-confirm-nombre').value.trim();
+  if (!apellido) { alert('El apellido no puede estar vacío.'); return; }
+
+  let result = buildAndShowFil(apellido, nombre);
+  if (!result) return;
+
+  if (filBatch.length > 0) filBatch[filBatch.length - 1] = result;
+  renderFilBatch();
+}
+
+function addFilToBatch(result) {
+  filBatch.push(result);
+  renderFilBatch();
+}
+
+function renderFilBatch() {
+  let list  = document.getElementById('fil-batch-list');
+  let count = document.getElementById('fil-batch-count');
+  count.textContent = `— ${filBatch.length}`;
+  list.innerHTML = filBatch.map((f, i) => `
+    <div class="fil-batch-item" onclick="copyFilItem(this, ${i})" title="Clic para copiar"
+      style="display:flex;align-items:center;gap:0.5rem;padding:0.5rem 0.75rem;background:white;border:1px solid var(--border);border-radius:var(--radius);font-size:0.9rem;cursor:pointer;transition:background 0.2s,border-color 0.2s;position:relative;">
+      <span style="flex:1;word-break:break-word;">${escHtml(f)}</span>
+      <span style="font-size:0.72rem;color:var(--accent-light);white-space:nowrap;flex-shrink:0;">⧉</span>
+      <button class="btn-ghost" onclick="event.stopPropagation();removeFilItem(${i})" style="flex-shrink:0;padding:0.25rem 0.55rem;font-size:0.78rem;" title="Eliminar">✕</button>
+    </div>`).join('');
+  if (filBatch.length > 0) show('fil-batch-section');
+  else hide('fil-batch-section');
+}
+
+function copyFilItem(el, i) {
+  let text = filBatch[i];
+  navigator.clipboard.writeText(text).catch(() => {
+    let ta = document.createElement('textarea');
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); document.body.removeChild(ta);
+  });
+  el.style.background = '#cfe8cf';
+  el.style.borderColor = 'var(--accent-light)';
+  setTimeout(() => { el.style.background = ''; el.style.borderColor = ''; }, 900);
+  showToast('¡Copiado al portapapeles!');
+}
+
+function removeFilItem(i) {
+  filBatch.splice(i, 1);
+  renderFilBatch();
+}
+
+function copyAllFils() {
+  let text = filBatch.join('\n');
+  navigator.clipboard.writeText(text).catch(() => {
+    let ta = document.createElement('textarea');
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); document.body.removeChild(ta);
+  });
+  showToast('¡Todas las filiaciones copiadas!');
+}
+
+function clearAllFils() {
+  filBatch = [];
+  renderFilBatch();
+}
+
+function addAnotherFil() {
+  document.getElementById('fil-name').value = '';
+  toggleClearBtn(document.getElementById('fil-name'));
+  hide('fil-result-section');
+  hide('fil-confirm-section');
+  document.getElementById('fil-name').focus();
+}
+
+function clearFil() {
+  document.getElementById('fil-name').value = '';
+  toggleClearBtn(document.getElementById('fil-name'));
+  hide('fil-result-section');
+  hide('fil-confirm-section');
+  document.getElementById('fil-name').focus();
+}
+
+function clearFilResult() {
+  hide('fil-result-section');
+  hide('fil-confirm-section');
+}
+
+// ══════════════════════════════════════════════════════════
+//  CLEARABLE INPUTS
+// ══════════════════════════════════════════════════════════
+
+function toggleClearBtn(inputEl) {
+  let btn = inputEl.parentElement.querySelector('.clear-btn');
+  if (!btn) return;
+  if (inputEl.value.length > 0) btn.classList.add('visible');
+  else btn.classList.remove('visible');
+}
+
+function clearableReset(id, clearFn) {
+  clearFn();
+  let el = document.getElementById(id);
+  if (el) toggleClearBtn(el);
+}
+
+// ══════════════════════════════════════════════════════════
+//  NOMBRES FORMATTER
+// ══════════════════════════════════════════════════════════
+
+let nombresData = [];
+
+function nombresLiveCount() { /* no-op */ }
+
+function formatNombres() {
+  let raw = document.getElementById('nombres-input').value.trim();
+  if (!raw) { alert('Ingresá al menos un nombre.'); return; }
+
+  let partes = raw.split(',').map(s => s.trim()).filter(Boolean);
+
+  nombresData = partes.map(p => {
+    let { apellido, nombre } = splitNameParts(p);
+    return { apellido, nombre, original: p };
+  });
+
+  let doSort = document.getElementById('nombres-sort').checked;
+  if (doSort) {
+    nombresData.sort((a, b) =>
+      a.apellido.localeCompare(b.apellido, 'es', { sensitivity: 'base' })
+    );
+  }
+
+  renderNombresResult();
+  show('nombres-result-section');
+  document.getElementById('nombres-result-section').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function renderNombresResult() {
+  updateNombresOutput();
+
+  let container = document.getElementById('nombres-rows');
+  container.innerHTML = nombresData.map((d, i) => `
+    <div class="nom-row" id="nom-row-${i}">
+      <div>
+        <div class="nom-field-label">Apellido</div>
+        <input class="nom-input" type="text" id="nom-ap-${i}" value="${escHtml(d.apellido)}"
+          oninput="nombresPreviewRow(${i})">
+      </div>
+      <button class="btn-swap" onclick="swapNombre(${i})" title="Invertir nombre ↔ apellido">⇄</button>
+      <div>
+        <div class="nom-field-label">Nombre</div>
+        <input class="nom-input" type="text" id="nom-no-${i}" value="${escHtml(d.nombre)}"
+          oninput="nombresPreviewRow(${i})">
+      </div>
+      <button class="btn-ghost" onclick="nombresApplyRow(${i})" title="Aplicar corrección"
+        style="padding:0.38rem 0.7rem;font-size:0.8rem;align-self:end;">✎</button>
+    </div>
+  `).join('');
+}
+
+function updateNombresOutput() {
+  let lines = nombresData.map(d => d.nombre ? `${d.apellido}, ${d.nombre}` : d.apellido);
+  document.getElementById('nombres-result-count').textContent = `— ${lines.length}`;
+
+  let boxesContainer = document.getElementById('nombres-individual-boxes');
+  boxesContainer.innerHTML = lines.map((line, i) => `
+    <div id="nom-box-${i}" onclick="copyNombreItem(this, ${i})" title="Clic para copiar"
+      style="display:flex;align-items:center;gap:0.5rem;padding:0.55rem 0.85rem;background:var(--accent-muted);border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:var(--radius);font-family:'Source Sans 3',sans-serif;font-size:0.97rem;cursor:pointer;transition:background 0.2s,border-color 0.2s;">
+      <span style="flex:1;word-break:break-word;color:var(--accent);">${escHtml(line)}</span>
+      <span style="font-size:0.72rem;color:var(--accent-light);white-space:nowrap;flex-shrink:0;">⧉</span>
+    </div>
+  `).join('');
+}
+
+// Invertir nombre↔apellido de una fila individual
+function swapNombre(i) {
+  let apEl = document.getElementById(`nom-ap-${i}`);
+  let noEl = document.getElementById(`nom-no-${i}`);
+  let tempAp = apEl.value;
+  apEl.value = noEl.value;
+  noEl.value = tempAp;
+
+  // Actualizar datos internos
+  nombresData[i].apellido = apEl.value;
+  nombresData[i].nombre   = noEl.value;
+
+  updateNombresOutput();
+
+  // Animación flash en la fila
+  let row = document.getElementById(`nom-row-${i}`);
+  row.classList.remove('flipped');
+  void row.offsetWidth; // forzar reflow para reiniciar la animación
+  row.classList.add('flipped');
+  setTimeout(() => row.classList.remove('flipped'), 400);
+}
+
+// Invertir todos
+function swapAllNombres() {
+  let count = nombresData.length;
+  if (!count) return;
+
+  for (let i = 0; i < count; i++) {
+    let apEl = document.getElementById(`nom-ap-${i}`);
+    let noEl = document.getElementById(`nom-no-${i}`);
+    let tempAp = apEl.value;
+    apEl.value = noEl.value;
+    noEl.value = tempAp;
+    nombresData[i].apellido = apEl.value;
+    nombresData[i].nombre   = noEl.value;
+
+    // Animación escalonada por fila
+    let row = document.getElementById(`nom-row-${i}`);
+    setTimeout(() => {
+      row.classList.remove('flipped');
+      void row.offsetWidth;
+      row.classList.add('flipped');
+      setTimeout(() => row.classList.remove('flipped'), 400);
+    }, i * 40);
+  }
+
+  updateNombresOutput();
+  showToast(`${count} nombre${count > 1 ? 's' : ''} invertido${count > 1 ? 's' : ''}`);
+}
+
+function nombresPreviewRow(i) {
+  let ap = document.getElementById(`nom-ap-${i}`).value.trim();
+  let no = document.getElementById(`nom-no-${i}`).value.trim();
+  nombresData[i].apellido = ap;
+  nombresData[i].nombre = no;
+  updateNombresOutput();
+}
+
+function nombresApplyRow(i) {
+  nombresPreviewRow(i);
+  showToast('Corrección aplicada');
+}
+
+function copyNombreItem(el, i) {
+  let line = nombresData[i].nombre
+    ? `${nombresData[i].apellido}, ${nombresData[i].nombre}`
+    : nombresData[i].apellido;
+  navigator.clipboard.writeText(line).catch(() => {
+    let ta = document.createElement('textarea');
+    ta.value = line; document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); document.body.removeChild(ta);
+  });
+  el.style.background = '#cfe8cf';
+  el.style.borderLeftColor = 'var(--accent-light)';
+  setTimeout(() => { el.style.background = ''; el.style.borderLeftColor = ''; }, 900);
+  showToast('¡Copiado!');
+}
+
+function copyAllNombres() {
+  let lines = nombresData.map(d => d.nombre ? `${d.apellido}, ${d.nombre}` : d.apellido);
+  let text = lines.join('\n');
+  navigator.clipboard.writeText(text).catch(() => {
+    let ta = document.createElement('textarea');
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); document.body.removeChild(ta);
+  });
+  showToast('¡Todos los nombres copiados!');
+}
+
+function clearNombres() {
+  document.getElementById('nombres-input').value = '';
+  toggleClearBtn(document.getElementById('nombres-input'));
+  hide('nombres-result-section');
+  nombresData = [];
+  document.getElementById('nombres-input').focus();
+}
+
+// ══════════════════════════════════════════════════════════
+//  A/a — CONVERSIÓN DE MAYÚSCULAS / MINÚSCULAS
+// ══════════════════════════════════════════════════════════
+
+function convertMayus(mode) {
+  let raw = document.getElementById('mayus-input').value;
+  if (!raw.trim()) { alert('Ingresá un texto para convertir.'); return; }
+
+  let result;
+  if (mode === 'lower') {
+    result = raw.toLowerCase();
+  } else if (mode === 'upper') {
+    result = raw.toUpperCase();
+  } else {
+    // Sentence case: mayúscula después de inicio y de ". " (o ".\n")
+    result = raw.toLowerCase().replace(/(^|[.!?]\s+|\n\s*)([a-záéíóúüñ])/giu, (m, pre, ch) => pre + ch.toUpperCase());
+  }
+
+  document.getElementById('mayus-result-inner').textContent = result;
+  show('mayus-result-section');
+  document.getElementById('mayus-result-section').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function clearMayus() {
+  document.getElementById('mayus-input').value = '';
+  toggleClearBtn(document.getElementById('mayus-input'));
+  hide('mayus-result-section');
+  document.getElementById('mayus-input').focus();
+}
+
+function sendMayusToInput() {
+  document.getElementById('mayus-input').value = document.getElementById('mayus-result-inner').textContent;
+  toggleClearBtn(document.getElementById('mayus-input'));
+  hide('mayus-result-section');
+  document.getElementById('mayus-input').focus();
+}
+</script>
+</body>
+</html>

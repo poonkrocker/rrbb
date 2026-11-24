@@ -518,6 +518,17 @@ $json_flags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRIN
 
 // ---- Datos de la TIENDA (compartido con tienda.php) ----
 require '_store_data.php';
+
+// ---- Datos de transferencia (editables desde el editor → site_settings) ----
+$transfer_alias  = 'RRBBPIZZA';
+$transfer_holder = 'Ezequiel Urquidi';
+try {
+    $ts = $pdo->query("SELECT setting_key, setting_value FROM site_settings WHERE setting_key IN ('transfer_alias','transfer_holder')");
+    foreach ($ts->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        if ($row['setting_key'] === 'transfer_alias'  && $row['setting_value'] !== '') $transfer_alias  = $row['setting_value'];
+        if ($row['setting_key'] === 'transfer_holder' && $row['setting_value'] !== '') $transfer_holder = $row['setting_value'];
+    }
+} catch (Throwable $e) { /* tabla inexistente → valores por defecto */ }
 ?>
 
 <!DOCTYPE html>
@@ -761,9 +772,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     <script>
         const isOpen = <?php echo json_encode($is_open); ?>;
 
+        // Datos de transferencia (editables desde el editor)
+        const TRANSFER_ALIAS  = <?php echo json_encode($transfer_alias); ?>;
+        const TRANSFER_HOLDER = <?php echo json_encode($transfer_holder); ?>;
+
+        // Métricas de uso (beacon liviano; reutiliza el endpoint de la carta)
+        function trackEvent(payload) {
+            try {
+                const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+                if (navigator.sendBeacon) {
+                    navigator.sendBeacon('carta/track.php', blob);
+                } else {
+                    fetch('carta/track.php', { method: 'POST', body: blob, keepalive: true }).catch(() => {});
+                }
+            } catch (e) { /* tracking no crítico */ }
+        }
+
         // Initialize page
         document.addEventListener('DOMContentLoaded', function() {
             console.log('Page loaded');
+            trackEvent({ type: 'view', source: 'home', path: location.pathname, ref: document.referrer });
             // Gallery rotation
             const slides = document.querySelectorAll('.gallery-slide');
             let currentSlide = 0;
@@ -950,7 +978,7 @@ function normalizePay(str){
 
   cartItems.innerHTML = '';
 
-  cart.forEach(item => {
+  cart.forEach((item, index) => {
     let itemTotal = item.price * item.quantity;
     let displayName = item.name;
 
@@ -962,9 +990,16 @@ function normalizePay(str){
       itemTotal += item.dependentPizza.price * item.quantity;
     }
 
+    const safeName = displayName.replace(/"/g, '&quot;');
     const cartItem = document.createElement('div');
     cartItem.className = 'cart-item';
-    cartItem.innerHTML = `<span>${displayName} x${item.quantity}</span><span>$${itemTotal.toFixed(2)}</span>`;
+    cartItem.innerHTML = `
+      <div class="cart-item-info">
+        <button type="button" class="cart-item-remove" onclick="removeCartItem(${index})" title="Eliminar este ítem" aria-label="Eliminar ${safeName}">✕</button>
+        <span class="cart-item-name">${displayName} x${item.quantity}</span>
+      </div>
+      <span class="cart-item-price">$${itemTotal.toFixed(2)}</span>
+    `;
     cartItems.appendChild(cartItem);
 
     total += itemTotal;
@@ -1002,13 +1037,27 @@ function normalizePay(str){
   cartTotal.textContent = total.toFixed(2);
   cartContainer.style.display = itemCount > 0 ? 'block' : 'none';
 }
+
+function removeCartItem(index) {
+  const cart = JSON.parse(localStorage.getItem('cart')) || [];
+  if (index >= 0 && index < cart.length) {
+    cart.splice(index, 1);
+    localStorage.setItem('cart', JSON.stringify(cart));
+    updateCartUI();
+    if (cart.length === 0) {
+      closeCart();
+    }
+  }
+}
         function showCartButton() {
             const cartContainer = document.getElementById('cartContainer');
             cartContainer.style.display = 'block';
             cartContainer.classList.add('active');
         }
 
-        function toggleCart() {
+        function toggleCart(ev) {
+            if (ev && ev.preventDefault) ev.preventDefault();
+            if (ev && ev.stopPropagation) ev.stopPropagation();
             if (!isOpen) {
                 alert('Lo sentimos, estamos cerrados en este momento.');
                 return;
@@ -1024,7 +1073,9 @@ function normalizePay(str){
             updateCartUI();
         }
 
-        function closeCart() {
+        function closeCart(ev) {
+            if (ev && ev.preventDefault) ev.preventDefault();
+            if (ev && ev.stopPropagation) ev.stopPropagation();
             const modal = document.getElementById('cartModal');
             const overlay = document.getElementById('overlay');
             modal.style.display = 'none';
@@ -1057,19 +1108,29 @@ function normalizePay(str){
         function sendOrder() {
   const cart = JSON.parse(localStorage.getItem('cart')) || [];
   const customerName = document.getElementById('customerName').value.trim();
+  const customerPhone = document.getElementById('customerPhone')?.value.trim() || '';
   const paymentMethod = document.getElementById('paymentMethod').value;
   const address = document.getElementById('deliveryAddress')?.value.trim() || '';
 
   if (!customerName) { alert('Por favor ingresa tu nombre para el pedido'); return; }
+  if (!customerPhone) { alert('Por favor ingresá tu teléfono o WhatsApp'); return; }
   if (deliveryType === 'envio' && !address) { alert('Por favor ingresá la dirección de entrega'); return; }
   if (!paymentMethod) { alert('Por favor selecciona una forma de pago'); return; }
   if (cart.length === 0) { alert('El carrito está vacío'); return; }
+
+  try {
+    localStorage.setItem('rrbb_customer_name', customerName);
+    localStorage.setItem('rrbb_customer_phone', customerPhone);
+    if (address) localStorage.setItem('rrbb_customer_address', address);
+  } catch (e) {}
 
   const entrega = deliveryType === 'envio'
     ? `🛵 *Envío a domicilio*\nDirección: ${address}`
     : `🏪 *Retiro en local* (27 de abril 798)`;
 
-  let message = `Hola, soy *${customerName}* y quisiera hacer el siguiente pedido:\n\n`;
+  let message = `Hola, soy *${customerName}*`;
+  if (customerPhone) message += ` (${customerPhone})`;
+  message += ` y quisiera hacer el siguiente pedido:\n\n`;
   let total = 0;
 
   cart.forEach(item => {
@@ -1095,10 +1156,22 @@ function normalizePay(str){
     message += `- Recargo TC x1: $${surcharge.toFixed(2)}\n`;
     total += surcharge;
   } else if (pm === 'transferencia') {
-    message += `\nDatos para la transferencia: Alias: RRBBPIZZA, Nombre: Ezequiel Urquidi`;
+    message += `\nDatos para la transferencia: Alias: ${TRANSFER_ALIAS}, Nombre: ${TRANSFER_HOLDER}`;
   }
 
   message += `\n\n${entrega}\nTotal: $${total.toFixed(2)}\nForma de pago: ${paymentMethod}`;
+
+  // Registramos el pedido (intención) antes de abrir WhatsApp
+  trackEvent({
+    type: 'order',
+    source: 'home',
+    delivery_type: deliveryType,
+    payment_method: paymentMethod,
+    total: Number(total.toFixed(2)),
+    pickup_time: '',
+    item_count: cart.reduce((n, it) => n + it.quantity, 0),
+    items: cart.map(it => ({ name: it.name, qty: it.quantity, price: it.price }))
+  });
 
   window.open(`https://wa.me/5493517548030?text=${encodeURIComponent(message)}`, '_blank');
   clearCart();
@@ -1250,9 +1323,7 @@ function normalizePay(str){
         }
     </script>
 </div>
-<a href="#category-7">
-    <img id="secret-image" class="secret-image" src="https://arrabbiata.com.ar/Uploads/csgif.gif" alt="Carta Secreta" onclick="toggleSecretMode()">
-</a>
+    <img id="secret-image" class="secret-image" src="https://arrabbiata.com.ar/Uploads/csgif.gif" alt="Carta Secreta" onclick="toggleSecretMode(event)" style="cursor:pointer;">
 
 
 <script>
