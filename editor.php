@@ -729,11 +729,84 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $success[] = "Producto actualizado correctamente.";
 
         } elseif ($action === 'add_category') {
-            $name          = trim((string)($_POST['category_name'] ?? ''));
-            $display_order = (int)($_POST['category_display_order'] ?? 0);
+            $name = trim((string)($_POST['category_name'] ?? ''));
             if ($name === '') throw new Exception("El nombre de la categoría es obligatorio.");
+            $maxOrd = (int)$pdo->query("SELECT COALESCE(MAX(display_order), 0) FROM categories")->fetchColumn();
+            $display_order = isset($_POST['category_display_order']) && (int)$_POST['category_display_order'] > 0
+                ? (int)$_POST['category_display_order']
+                : ($maxOrd + 1);
             $pdo->prepare("INSERT INTO categories (name, display_order) VALUES (?, ?)")->execute([$name, $display_order]);
             $success[] = "Categoría agregada correctamente.";
+
+        } elseif ($action === 'add_category_ajax') {
+            header('Content-Type: application/json; charset=utf-8');
+            $name = trim((string)($_POST['category_name'] ?? ''));
+            if ($name === '') {
+                echo json_encode(['ok' => false, 'error' => 'El nombre de la categoría es obligatorio.']);
+                exit;
+            }
+            $maxOrd = (int)$pdo->query("SELECT COALESCE(MAX(display_order), 0) FROM categories")->fetchColumn();
+            $nextOrd = $maxOrd + 1;
+            $pdo->prepare("INSERT INTO categories (name, display_order) VALUES (?, ?)")->execute([$name, $nextOrd]);
+            $newId = (int)$pdo->lastInsertId();
+            echo json_encode([
+                'ok'       => true,
+                'category' => ['id' => $newId, 'name' => $name, 'display_order' => $nextOrd],
+            ], JSON_UNESCAPED_UNICODE);
+            exit;
+
+        } elseif ($action === 'rename_category_ajax') {
+            header('Content-Type: application/json; charset=utf-8');
+            $id   = (int)($_POST['category_id'] ?? 0);
+            $name = trim((string)($_POST['category_name'] ?? ''));
+            if ($id <= 0 || $name === '') {
+                echo json_encode(['ok' => false, 'error' => 'Datos de categoría inválidos.']);
+                exit;
+            }
+            $pdo->prepare("UPDATE categories SET name = ? WHERE id = ?")->execute([$name, $id]);
+            echo json_encode(['ok' => true, 'id' => $id, 'name' => $name], JSON_UNESCAPED_UNICODE);
+            exit;
+
+        } elseif ($action === 'delete_category_ajax') {
+            header('Content-Type: application/json; charset=utf-8');
+            $id          = (int)($_POST['category_id'] ?? 0);
+            $confirmWith = !empty($_POST['confirm_with_items']);
+            if ($id <= 0) {
+                echo json_encode(['ok' => false, 'error' => 'Categoría inválida.']);
+                exit;
+            }
+            $idStmt = $pdo->prepare("SELECT id FROM menu_items WHERE category_id = ?");
+            $idStmt->execute([$id]);
+            $itemIds = array_map('intval', $idStmt->fetchAll(PDO::FETCH_COLUMN));
+            $count   = count($itemIds);
+
+            if ($count > 0 && !$confirmWith) {
+                echo json_encode(['ok' => false, 'needs_confirm' => true, 'count' => $count]);
+                exit;
+            }
+
+            $pdo->beginTransaction();
+            try {
+                if ($count > 0) {
+                    $ph = implode(',', array_fill(0, $count, '?'));
+                    $pdo->prepare("DELETE FROM menu_item_subproducts WHERE parent_item_id IN ($ph) OR sub_item_id IN ($ph)")
+                        ->execute(array_merge($itemIds, $itemIds));
+                    $pdo->prepare("DELETE FROM menu_item_variants WHERE item_id IN ($ph)")
+                        ->execute($itemIds);
+                    $pdo->prepare("DELETE FROM menu_items WHERE category_id = ?")->execute([$id]);
+                }
+                $pdo->prepare("DELETE FROM categories WHERE id = ?")->execute([$id]);
+                $pdo->commit();
+                echo json_encode([
+                    'ok'               => true,
+                    'deleted_items'    => $count,
+                    'deleted_item_ids' => $itemIds,
+                ]);
+            } catch (Throwable $e) {
+                $pdo->rollBack();
+                echo json_encode(['ok' => false, 'error' => $e->getMessage()]);
+            }
+            exit;
 
         } elseif ($action === 'update_category') {
             $id            = (int)($_POST['category_id'] ?? 0);
@@ -841,6 +914,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 echo json_encode(['ok' => false, 'error' => $e->getMessage()]);
             }
             exit;
+
+        } elseif ($action === 'update_payments_and_store') {
+            $alias   = trim((string)($_POST['transfer_alias']  ?? ''));
+            $holder  = trim((string)($_POST['transfer_holder'] ?? ''));
+            $rawShip = str_replace(',', '.', trim((string)($_POST['store_shipping_cost'] ?? '0')));
+            if ($rawShip === '') $rawShip = '0';
+
+            if ($alias === '' || $holder === '') {
+                throw new Exception("El alias y el titular de transferencia no pueden quedar vacíos.");
+            }
+            if (!is_numeric($rawShip) || (float)$rawShip < 0) {
+                throw new Exception("El costo de envío de Tienda debe ser 0 o un monto positivo.");
+            }
+
+            $a         = substr($alias,  0, 190);
+            $h         = substr($holder, 0, 190);
+            $shipClean = (string)round((float)$rawShip, 2);
+
+            $up = $pdo->prepare("
+                INSERT INTO site_settings (setting_key, setting_value) VALUES (?, ?)
+                ON DUPLICATE KEY UPDATE setting_value = ?
+            ");
+            $up->execute(['transfer_alias',      $a,         $a]);
+            $up->execute(['transfer_holder',     $h,         $h]);
+            $up->execute(['store_shipping_cost', $shipClean, $shipClean]);
+            $success[] = "Datos de transferencia y configuración de Tienda actualizados.";
 
         } elseif ($action === 'update_transfer_settings') {
             $alias  = trim((string)($_POST['transfer_alias']  ?? ''));
@@ -1256,12 +1355,18 @@ $days_of_week = [
         .btn-add-schedule:hover { background: var(--azul-elec) !important; color: #fff !important; border-style: solid !important; }
 
         .deploy-box {
-            margin-bottom: 22px; padding: 18px 20px; border-radius: var(--radius);
-            border: 2.5px solid var(--azul-elec); background: #eef6ff;
-            box-shadow: 4px 4px 0 var(--azul-elec);
+            padding: 18px 20px; background: #eef6ff;
         }
-        .deploy-box.has-changes { background: #fff8eb; border-color: #d97706; box-shadow: 4px 4px 0 #b45309; }
-        .deploy-box h3 { font-family: var(--font-display); font-size: 1.45rem; color: var(--marron); margin-bottom: 6px; letter-spacing: .03em; }
+        .deploy-box.has-changes { background: #fff8eb; }
+        .deploy-summary-badge {
+            display: inline-block; margin-left: 10px; padding: 2px 10px;
+            border-radius: 99px; font-family: var(--font-body); font-size: 0.78rem;
+            font-weight: 700; text-transform: none; letter-spacing: 0; vertical-align: middle;
+            background: #fef3c7; color: #92400e; border: 1.5px solid #f59e0b;
+        }
+        .deploy-summary-badge.ok {
+            background: #dcfce7; color: #166534; border-color: #86efac;
+        }
         .deploy-meta { font-size: 0.85rem; color: #475569; margin-bottom: 10px; line-height: 1.45; }
         .deploy-pill-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 12px; }
         .deploy-pill {
@@ -1276,6 +1381,41 @@ $days_of_week = [
             font-size: 1rem !important; font-weight: 700 !important; border-radius: 8px !important; cursor: pointer;
         }
         .btn-deploy-now:hover { background: #15803d !important; transform: translate(-1px,-1px); }
+
+        .bulk-cat-header {
+            font-weight: 700; margin: 14px 0 4px; font-size: 0.98rem; color: var(--marron);
+            border-bottom: 1.5px solid #d6cbb8; padding-bottom: 6px;
+            display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+        }
+        .bulk-cat-title {
+            cursor: pointer; padding: 2px 7px; border-radius: 5px;
+            transition: background 0.15s ease; user-select: none;
+        }
+        .bulk-cat-title:hover {
+            background: #e0ecff; color: var(--azul-elec);
+        }
+        .cat-inline-edit-input {
+            padding: 4px 8px !important; margin: 0 !important; width: 220px !important;
+            max-width: 260px !important; font-size: 0.95rem !important; font-weight: 700 !important;
+            border: 2px solid var(--azul-elec) !important; border-radius: 5px !important;
+        }
+        .bulk-cat-del-btn {
+            background: #fff !important; color: #cc0000 !important;
+            border: 1.5px solid #fca5a5 !important; border-radius: 20px !important;
+            padding: 2px 10px !important; font-size: 0.82rem !important; font-weight: 700 !important;
+            cursor: pointer !important; box-shadow: none !important; line-height: 1.3 !important;
+        }
+        .bulk-cat-del-btn:hover {
+            background: #cc0000 !important; color: #fff !important; border-color: #991b1b !important;
+        }
+        .empty-cat-note {
+            font-size: 0.84rem; color: #7c6f5b; font-style: italic;
+            padding: 8px 12px; background: #faf6ee; border: 1px dashed #d6cbb8;
+            border-radius: 6px; margin-bottom: 8px;
+        }
+        .sub-divider {
+            border: none; border-top: 2px dashed var(--ocre-d); margin: 18px 0 12px;
+        }
 
         .status-badge {
             display: inline-block; padding: 3px 10px; border-radius: 99px;
@@ -1314,74 +1454,6 @@ $days_of_week = [
             <?php foreach ($success as $msg): ?>
                 <p class="success"><?php echo htmlspecialchars($msg, ENT_QUOTES, 'UTF-8'); ?></p>
             <?php endforeach; ?>
-
-            <!-- 0. Publicación 1-Click desde /github hacia Producción (Sin FTP) -->
-            <?php if ($deploy_status['available']):
-                $pendingCount = count($deploy_status['pending']);
-                $obsCount     = count($deploy_status['obsolete']);
-                $hasWork      = ($pendingCount > 0 || $obsCount > 0);
-            ?>
-            <div class="deploy-box <?php echo $hasWork ? 'has-changes' : ''; ?>">
-                <h3>🚀 Publicar desde GitHub a Producción (Sin FTP)</h3>
-                <div class="deploy-meta">
-                    <?php if ($deploy_status['in_github']): ?>
-                        <strong>Estás en el editor de pruebas (<code>/github/editor.php</code>).</strong> Al publicar por primera vez, ya vas a poder hacer los próximos despliegues directamente desde <code>arrabbiata.com.ar/editor.php</code>.<br>
-                    <?php endif; ?>
-                    Origen: <code><?php echo htmlspecialchars($deploy_status['src'], ENT_QUOTES, 'UTF-8'); ?></code> &rarr;
-                    Destino: <code><?php echo htmlspecialchars($deploy_status['dst'], ENT_QUOTES, 'UTF-8'); ?></code>
-                    <?php if (!empty($deploy_status['git']['hash'])): ?>
-                        <br>Última versión en <code>/github</code>: <strong><code><?php echo htmlspecialchars($deploy_status['git']['hash'], ENT_QUOTES, 'UTF-8'); ?></code></strong>
-                        <?php if (!empty($deploy_status['git']['date'])): ?>(<?php echo htmlspecialchars($deploy_status['git']['date'], ENT_QUOTES, 'UTF-8'); ?>)<?php endif; ?>
-                        <?php if (!empty($deploy_status['git']['msg'])): ?> — <em><?php echo htmlspecialchars($deploy_status['git']['msg'], ENT_QUOTES, 'UTF-8'); ?></em><?php endif; ?>
-                    <?php endif; ?>
-                </div>
-
-                <?php if ($pendingCount > 0): ?>
-                    <p style="font-size:0.9rem;font-weight:700;color:#92400e;">
-                        Hay <?php echo $pendingCount; ?> archivo(s) con cambios listos para pasar a producción:
-                    </p>
-                    <div class="deploy-pill-list">
-                        <?php foreach ($deploy_status['pending'] as $pf): ?>
-                            <span class="deploy-pill <?php echo htmlspecialchars($pf['status'], ENT_QUOTES, 'UTF-8'); ?>">
-                                <?php echo ($pf['status'] === 'nuevo' ? '+ ' : '↻ ') . htmlspecialchars($pf['file'], ENT_QUOTES, 'UTF-8'); ?>
-                            </span>
-                        <?php endforeach; ?>
-                    </div>
-                <?php else: ?>
-                    <p style="font-size:0.92rem;font-weight:700;color:#166534;margin-bottom:8px;">
-                        ✓ Producción (<code>public_html</code> y <code>/carta</code>) está 100% al día con <code>/github</code> (<?php echo (int)$deploy_status['total_files']; ?> archivos verificados).
-                    </p>
-                <?php endif; ?>
-
-                <?php if ($obsCount > 0): ?>
-                    <p style="font-size:0.86rem;font-weight:700;color:#991b1b;margin-top:6px;">
-                        Archivos viejos / inseguros detectados en producción:
-                    </p>
-                    <div class="deploy-pill-list">
-                        <?php foreach ($deploy_status['obsolete'] as $of): ?>
-                            <span class="deploy-pill obs">🗑 <?php echo htmlspecialchars($of, ENT_QUOTES, 'UTF-8'); ?></span>
-                        <?php endforeach; ?>
-                    </div>
-                <?php endif; ?>
-
-                <form method="POST" onsubmit="return confirm('¿Publicar ahora los archivos desde /github hacia public_html y /carta? (Tus fotos en /Uploads, config.php y otras carpetas no se tocan)');" style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin-top:8px;">
-                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>">
-                    <input type="hidden" name="action" value="deploy_from_github">
-                    <?php if ($pendingCount === 0 && $obsCount === 0): ?>
-                        <input type="hidden" name="force_all" value="1">
-                    <?php endif; ?>
-                    <?php if ($obsCount > 0): ?>
-                        <label style="display:inline-flex;align-items:center;gap:6px;font-size:0.86rem;font-weight:600;color:#991b1b;cursor:pointer;margin:0;">
-                            <input type="checkbox" name="clean_obsolete" value="1" checked style="width:auto;margin:0;">
-                            Eliminar también los <?php echo $obsCount; ?> archivo(s) viejos/inseguros listados arriba
-                        </label>
-                    <?php endif; ?>
-                    <button type="submit" class="btn-deploy-now">
-                        <?php echo ($pendingCount > 0 || $obsCount > 0) ? '🚀 Publicar cambios a Producción ahora' : '🔄 Re-sincronizar todos los archivos'; ?>
-                    </button>
-                </form>
-            </div>
-            <?php endif; ?>
 
             <!-- 1. Horarios de Atención (un solo paso con cruce de medianoche) -->
             <details>
@@ -1458,194 +1530,32 @@ $days_of_week = [
                 </div>
             </details>
 
-            <!-- 2. Datos de Transferencia -->
+            <!-- 2. Categorías y Actualización Masiva (Unificado) -->
             <details>
-                <summary>Datos de Transferencia</summary>
+                <summary>Categorías y Actualización Masiva</summary>
                 <div class="editor-form">
-                    <h3>Alias y titular que ve el cliente</h3>
-                    <p class="note">Se muestran en el carrito y en el mensaje de WhatsApp cuando el cliente elige pagar por transferencia.</p>
-                    <form method="POST">
-                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>">
-                        <input type="hidden" name="action" value="update_transfer_settings">
-                        <label>Alias CBU/CVU:</label>
-                        <input type="text" name="transfer_alias" value="<?php echo htmlspecialchars($transfer_alias, ENT_QUOTES, 'UTF-8'); ?>" placeholder="Alias" maxlength="190" required>
-                        <label>Titular de la cuenta:</label>
-                        <input type="text" name="transfer_holder" value="<?php echo htmlspecialchars($transfer_holder, ENT_QUOTES, 'UTF-8'); ?>" placeholder="Titular de la cuenta" maxlength="190" required>
-                        <div style="margin-top:8px;"><button type="submit">Guardar transferencia</button></div>
-                    </form>
-                </div>
-            </details>
+                    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+                        <h3 style="margin:0;">Categorías, orden, visibilidad y precios</h3>
+                        <button type="button" id="btn-toggle-add-cat" style="margin:0;padding:8px 18px;font-size:0.9rem;">
+                            + Agregar Categoría
+                        </button>
+                    </div>
 
-            <!-- 3. Pixel de Meta y Google Analytics / Tag Manager -->
-            <details>
-                <summary>Pixel de Meta y Google Analytics</summary>
-                <div class="editor-form">
-                    <h3>Trackers activos en Home, Carta y Tienda</h3>
-                    <p class="note">
-                        Estos IDs se inyectan automáticamente en <strong>arrabbiata.com.ar</strong>, <strong>carta.arrabbiata.com.ar</strong> y <strong>tienda.php</strong>, disparando eventos estándar de comercio electrónico:
-                        <code>PageView</code>, <code>AddToCart</code>, <code>InitiateCheckout</code>, <code>Purchase</code> (con código único y monto en ARS) y <code>Contact</code>.
-                    </p>
-                    <form method="POST">
-                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>">
-                        <input type="hidden" name="action" value="update_tracking_settings">
-                        <label>Google Tag Manager ID (Contenedor):</label>
-                        <input type="text" name="gtm_id" value="<?php echo htmlspecialchars($gtm_id, ENT_QUOTES, 'UTF-8'); ?>" placeholder="GTM-5JWLLKC7" maxlength="32">
-                        <label>Meta Pixel ID (Facebook / Instagram Ads):</label>
-                        <input type="text" name="meta_pixel_id" value="<?php echo htmlspecialchars($meta_pixel_id, ENT_QUOTES, 'UTF-8'); ?>" placeholder="313442609878673" maxlength="32">
-                        <label>Google Analytics 4 ID directo (opcional si ya lo cargás dentro de GTM):</label>
-                        <input type="text" name="ga4_id" value="<?php echo htmlspecialchars($ga4_id, ENT_QUOTES, 'UTF-8'); ?>" placeholder="G-XXXXXXXXXX (opcional)" maxlength="32">
-                        <div style="margin-top:8px;"><button type="submit">Guardar Trackers</button></div>
-                    </form>
-                </div>
-            </details>
-
-            <!-- 3B. Tienda Online (Mercado Pago, Envío y Pedidos) -->
-            <details>
-                <summary>Tienda Online y Cobros (Mercado Pago)</summary>
-                <div class="editor-form">
-                    <h3>Estado de la Pasarela de Pagos</h3>
-                    <?php if ($mp_token_configured): ?>
-                        <p style="background:#dcfce7;border:1.5px solid #86efac;color:#166534;padding:10px 14px;border-radius:8px;font-weight:700;">
-                            🟢 Cobro Real Activo — Access Token detectado en <code>config.php</code> (<code><?php echo htmlspecialchars($mp_token_preview, ENT_QUOTES, 'UTF-8'); ?></code>).
-                        </p>
-                    <?php else: ?>
-                        <div style="background:#fef3c7;border:1.5px solid #fcd34d;color:#92400e;padding:12px 14px;border-radius:8px;font-size:0.9rem;line-height:1.5;">
-                            <strong>🟡 Modo Demo (Sin cobro real todavía):</strong> Falta agregar tu <strong>Access Token de Producción</strong> de Mercado Pago dentro de <code>/home/c2652217/config.php</code> (fuera de GitHub por seguridad):<br>
-                            <code style="display:inline-block;margin-top:6px;background:#fff;padding:4px 8px;border-radius:4px;color:#1e293b;">'mp_access_token' =&gt; 'APP_USR-tu-access-token-de-produccion',</code>
+                    <div id="add-cat-inline-bar" style="display:none;background:#fff;border:2px solid var(--azul-elec);border-radius:8px;padding:12px 14px;margin-top:6px;">
+                        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+                            <input type="text" id="new-cat-name-input" placeholder="Nombre de la nueva categoría (ej: Postres, Tienda...)" maxlength="120" style="flex:1;min-width:200px;max-width:none;margin:0;">
+                            <button type="button" id="btn-save-new-cat" style="margin:0;">Crear Categoría</button>
+                            <button type="button" id="btn-cancel-new-cat" style="margin:0;background:#6b7280;border-color:#4b5563;box-shadow:2px 2px 0 #4b5563;">Cancelar</button>
                         </div>
-                    <?php endif; ?>
+                    </div>
 
-                    <h3 style="margin-top:14px;">Costo de Envío en Tienda</h3>
-                    <p class="note">
-                        Si ponés <strong>0</strong>, cuando el comprador elija <em>Envío a domicilio</em> verá un aviso indicando que el envío se coordina por WhatsApp. Si ponés un monto mayor a 0 (ej. <code>4500</code>), se suma automáticamente al carrito y al cobro de Mercado Pago.
+                    <p class="note" style="margin:6px 0 10px;">
+                        <strong>⠿</strong> = arrastrar categorías o productos &nbsp;|&nbsp;
+                        <strong>Doble clic en categoría</strong> = renombrar &nbsp;|&nbsp;
+                        <strong>👁 / 🚫</strong> = mostrar / ocultar al instante &nbsp;|&nbsp;
+                        <strong>✕</strong> = eliminar
                     </p>
-                    <form method="POST">
-                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>">
-                        <input type="hidden" name="action" value="update_store_settings">
-                        <label>Costo fijo de envío a domicilio (ARS):</label>
-                        <input type="number" step="0.01" min="0" name="store_shipping_cost" value="<?php echo htmlspecialchars($store_shipping_cost, ENT_QUOTES, 'UTF-8'); ?>" placeholder="0" required>
-                        <div style="margin-top:8px;"><button type="submit">Guardar envío de Tienda</button></div>
-                    </form>
 
-                    <p class="note" style="margin-top:12px;">
-                        <strong>¿Cómo mostrar productos en la Tienda?</strong> Creá una categoría cuyo nombre contenga la palabra <strong>Tienda</strong> (por ejemplo <em>Tienda</em> o <em>Tienda Merch</em>) y cargale tus productos (podés usar Variantes para talles S/M/L/XL). La sección aparecerá sola en el Home y en <a href="tienda.php" target="_blank" style="color:var(--azul-elec);text-decoration:underline;">tienda.php</a>.
-                    </p>
-                </div>
-
-                <?php if (!empty($store_orders)): ?>
-                <div class="hours-table-container">
-                    <h3>Últimas Compras en Tienda</h3>
-                    <table class="hours-table">
-                        <thead>
-                            <tr>
-                                <th>Fecha / Ref</th>
-                                <th>Cliente</th>
-                                <th>Entrega</th>
-                                <th>Detalle</th>
-                                <th>Total / Estado</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php foreach ($store_orders as $so):
-                                $soItems = json_decode((string)$so['items_json'], true) ?: [];
-                                $stClass = in_array($so['status'], ['approved', 'pending', 'demo'], true) ? $so['status'] : 'rejected';
-                                $stLabels = ['approved' => 'Pagado', 'pending' => 'Pendiente', 'demo' => 'Demo', 'rejected' => 'Rechazado', 'cancelled' => 'Cancelado'];
-                                $stLabel = $stLabels[$so['status']] ?? $so['status'];
-                                $waDigits = preg_replace('/\D+/', '', (string)$so['customer_phone']);
-                            ?>
-                            <tr>
-                                <td>
-                                    <strong><?php echo htmlspecialchars((string)$so['reference'], ENT_QUOTES, 'UTF-8'); ?></strong><br>
-                                    <span style="font-size:11px;color:#666;"><?php echo htmlspecialchars((string)$so['created_at'], ENT_QUOTES, 'UTF-8'); ?></span>
-                                </td>
-                                <td>
-                                    <strong><?php echo htmlspecialchars((string)$so['customer_name'], ENT_QUOTES, 'UTF-8'); ?></strong><br>
-                                    <span style="font-size:12px;"><?php echo htmlspecialchars((string)$so['customer_email'], ENT_QUOTES, 'UTF-8'); ?></span><br>
-                                    <?php if ($waDigits !== ''): ?>
-                                        <a href="https://wa.me/<?php echo htmlspecialchars($waDigits, ENT_QUOTES, 'UTF-8'); ?>" target="_blank" rel="noopener" style="color:#15803d;font-weight:700;font-size:12px;">📱 <?php echo htmlspecialchars((string)$so['customer_phone'], ENT_QUOTES, 'UTF-8'); ?></a>
-                                    <?php else: ?>
-                                        <?php echo htmlspecialchars((string)$so['customer_phone'], ENT_QUOTES, 'UTF-8'); ?>
-                                    <?php endif; ?>
-                                </td>
-                                <td>
-                                    <?php if ($so['delivery_type'] === 'envio'): ?>
-                                        <strong>🛵 Envío</strong><br>
-                                        <span style="font-size:12px;"><?php echo htmlspecialchars((string)$so['address'], ENT_QUOTES, 'UTF-8'); ?></span>
-                                    <?php else: ?>
-                                        <strong>🏪 Retiro en local</strong>
-                                    <?php endif; ?>
-                                </td>
-                                <td style="font-size:12px;">
-                                    <?php foreach ($soItems as $sit): ?>
-                                        <div>• <?php echo htmlspecialchars((string)($sit['name'] ?? ''), ENT_QUOTES, 'UTF-8'); ?> x<?php echo (int)($sit['qty'] ?? 1); ?></div>
-                                    <?php endforeach; ?>
-                                </td>
-                                <td>
-                                    <strong>$<?php echo number_format((float)$so['total'], 0, ',', '.'); ?></strong><br>
-                                    <span class="status-badge <?php echo htmlspecialchars($stClass, ENT_QUOTES, 'UTF-8'); ?>"><?php echo htmlspecialchars($stLabel, ENT_QUOTES, 'UTF-8'); ?></span>
-                                </td>
-                            </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                </div>
-                <?php endif; ?>
-            </details>
-
-            <!-- 4. Administrar Categorías -->
-            <details>
-                <summary>Administrar Categorías</summary>
-                <div class="editor-form">
-                    <h3>Agregar Nueva Categoría</h3>
-                    <form method="POST" onsubmit="return validateCategoryForm(this)">
-                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>">
-                        <input type="hidden" name="action" value="add_category">
-                        <input type="text" name="category_name" placeholder="Nombre de la Categoría" required>
-                        <input type="number" name="category_display_order" placeholder="Orden de Visualización" value="0" required>
-                        <div><button type="submit">Agregar Categoría</button></div>
-                    </form>
-                </div>
-                <div class="category-list">
-                    <h3>Categorías Existentes</h3>
-                    <p class="note">Arrastrá las categorías con <strong>⠿</strong> para reordenarlas y luego confirmá.</p>
-                    <ul id="category-sortable" style="list-style:none;padding:0;margin:0 0 14px;">
-                    <?php foreach ($categories as $category): ?>
-                        <li data-id="<?php echo (int)$category['id']; ?>"
-                            style="display:flex;align-items:center;gap:10px;background:white;border-radius:10px;padding:12px 16px;margin-bottom:8px;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
-                            <span class="cat-drag-handle" title="Arrastrá para reordenar"
-                                style="cursor:grab;color:#aaa;font-size:1.2rem;user-select:none;flex-shrink:0;">⠿</span>
-                            <form method="POST" onsubmit="return validateCategoryForm(this)"
-                                style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;flex:1;">
-                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>">
-                                <input type="hidden" name="action" value="update_category">
-                                <input type="hidden" name="category_id" value="<?php echo (int)$category['id']; ?>">
-                                <input type="hidden" name="category_display_order" value="<?php echo (int)$category['display_order']; ?>">
-                                <input type="text" name="category_name"
-                                    value="<?php echo htmlspecialchars((string)$category['name'], ENT_QUOTES, 'UTF-8'); ?>"
-                                    required style="flex:1;min-width:140px;">
-                                <button type="submit">Actualizar</button>
-                                <button type="submit" name="action" value="delete_category" onclick="return confirm('¿Eliminar esta categoría?');" style="background:#6b7280;border-color:#4b5563;box-shadow:2px 2px 0 #4b5563;">Eliminar</button>
-                            </form>
-                        </li>
-                    <?php endforeach; ?>
-                    </ul>
-                    <button type="button" id="btn-confirm-cat-order"
-                        style="background:#28a745;color:white;border:none;padding:10px 24px;border-radius:8px;font-size:1rem;cursor:pointer;font-weight:600;display:none;">
-                        ✔ Confirmar nuevo orden de categorías
-                    </button>
-                    <span id="cat-order-status" style="margin-left:12px;font-size:0.9rem;"></span>
-                </div>
-            </details>
-
-            <!-- 5. Actualización Masiva -->
-            <details>
-                <summary>Actualización Masiva</summary>
-                <div class="editor-form">
-                    <h3>Editar precios y visibilidad de todos los productos</h3>
-                    <p class="note" style="margin-bottom:12px;">
-                        <strong>👁</strong> = visible &nbsp;|&nbsp; <strong>🚫</strong> = oculto (se guarda al instante) &nbsp;|&nbsp;
-                        <strong>⠿</strong> = arrastrar para ordenar &nbsp;|&nbsp; <strong>✕</strong> = marcar para eliminar al guardar
-                    </p>
                     <form method="POST" id="bulk-price-form">
                         <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>">
                         <input type="hidden" name="action" value="bulk_update_prices">
@@ -1657,70 +1567,83 @@ $days_of_week = [
                             $items_by_cat[$it['category_id']][] = $it;
                         }
                         foreach ($categories as $cat):
-                            if (empty($items_by_cat[$cat['id']])) continue;
+                            $cid         = (int)$cat['id'];
+                            $catItems    = $items_by_cat[$cid] ?? [];
+                            $hasCatItems = !empty($catItems);
                         ?>
-                        <div class="bulk-cat-block" data-cat-id="<?php echo (int)$cat['id']; ?>" style="margin-bottom:4px;">
-                        <p style="font-weight:700;margin:14px 0 4px;font-size:0.95rem;color:#555;border-bottom:1px solid #ddd;padding-bottom:4px;display:flex;align-items:center;gap:10px;">
-                            <span class="bulk-cat-handle" title="Arrastrá para reordenar categorías"
-                                style="cursor:grab;color:#aaa;font-size:1.1rem;user-select:none;flex-shrink:0;">⠿</span>
-                            <?php echo htmlspecialchars((string)$cat['name'], ENT_QUOTES, 'UTF-8'); ?>
-                            <span style="margin-left:auto;display:flex;gap:6px;">
-                                <button type="button" class="bulk-raise-btn" data-category="<?php echo (int)$cat['id']; ?>" data-amount="-1000"
-                                    style="background:#e65c00;color:white;border:none;border-radius:20px;padding:3px 12px;font-size:0.8rem;cursor:pointer;font-weight:600;box-shadow:none;">
-                                    -$1000
-                                </button>
-                                <button type="button" class="bulk-raise-btn" data-category="<?php echo (int)$cat['id']; ?>" data-amount="1000"
-                                    style="background:#007bff;color:white;border:none;border-radius:20px;padding:3px 12px;font-size:0.8rem;cursor:pointer;font-weight:600;box-shadow:none;">
-                                    +$1000
-                                </button>
-                            </span>
-                        </p>
-                        <table class="hours-table" style="width:100%;min-width:440px;margin-bottom:8px;">
-                            <thead>
-                                <tr>
-                                    <th style="width:28px;"></th>
-                                    <th style="text-align:left;">Producto</th>
-                                    <th style="width:130px;">Precio ($)</th>
-                                    <th style="width:42px;text-align:center;">👁</th>
-                                    <th style="width:42px;text-align:center;">✕</th>
-                                </tr>
-                            </thead>
-                            <tbody class="bulk-sortable" data-category="<?php echo (int)$cat['id']; ?>">
-                                <?php foreach ($items_by_cat[$cat['id']] as $item): ?>
-                                <tr data-id="<?php echo (int)$item['id']; ?>" style="<?php echo !$item['is_visible'] ? 'opacity:0.5;' : ''; ?>">
-                                    <td style="cursor:grab;color:#aaa;font-size:1.1rem;text-align:center;user-select:none;" class="bulk-drag-handle" title="Arrastrá para reordenar">⠿</td>
-                                    <td>
-                                        <?php echo htmlspecialchars((string)$item['name'], ENT_QUOTES, 'UTF-8'); ?>
-                                        <?php if (!empty($item['is_weekly_special'])): ?><span class="mini-badge dest">⭐ Destacado</span><?php endif; ?>
-                                        <?php if (!empty($item['is_secret_menu'])): ?><span class="mini-badge sec">🕵️ Secreta</span><?php endif; ?>
-                                    </td>
-                                    <td>
-                                        <input type="number" step="0.01" min="0.01" required
-                                            name="prices[<?php echo (int)$item['id']; ?>]"
-                                            value="<?php echo htmlspecialchars((string)$item['price'], ENT_QUOTES, 'UTF-8'); ?>"
-                                            style="width:115px;max-width:115px;padding:6px;border:1px solid #ccc;border-radius:5px;text-align:right;">
-                                    </td>
-                                    <td style="text-align:center;">
-                                        <button type="button"
-                                            class="bulk-vis-btn"
-                                            data-id="<?php echo (int)$item['id']; ?>"
-                                            data-csrf="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>"
-                                            title="<?php echo $item['is_visible'] ? 'Visible — clic para ocultar' : 'Oculto — clic para mostrar'; ?>"
-                                            style="background:none;border:none;box-shadow:none;cursor:pointer;font-size:1.2rem;padding:2px 6px;">
-                                            <?php echo $item['is_visible'] ? '👁' : '🚫'; ?>
+                        <div class="bulk-cat-block" data-cat-id="<?php echo $cid; ?>" style="margin-bottom:6px;">
+                            <div class="bulk-cat-header">
+                                <span class="bulk-cat-handle" title="Arrastrá para reordenar categorías"
+                                    style="cursor:grab;color:#888;font-size:1.15rem;user-select:none;flex-shrink:0;">⠿</span>
+                                <span class="bulk-cat-title" data-cat-id="<?php echo $cid; ?>" title="Doble clic para cambiar el nombre de la categoría"><?php echo htmlspecialchars((string)$cat['name'], ENT_QUOTES, 'UTF-8'); ?></span>
+                                <span class="bulk-cat-status" style="font-size:0.78rem;color:#16a34a;font-weight:700;"></span>
+                                <span style="margin-left:auto;display:flex;align-items:center;gap:6px;">
+                                    <?php if ($hasCatItems): ?>
+                                        <button type="button" class="bulk-raise-btn" data-category="<?php echo $cid; ?>" data-amount="-1000"
+                                            style="background:#e65c00;color:white;border:none;border-radius:20px;padding:3px 12px;font-size:0.8rem;cursor:pointer;font-weight:600;box-shadow:none;">
+                                            -$1000
                                         </button>
-                                    </td>
-                                    <td style="text-align:center;">
-                                        <button type="button"
-                                            data-name="<?php echo htmlspecialchars((string)$item['name'], ENT_QUOTES, 'UTF-8'); ?>"
-                                            class="bulk-delete-btn"
-                                            style="background:none;border:none;box-shadow:none;cursor:pointer;font-size:1.2rem;color:#cc0000;padding:2px 6px;" title="Eliminar producto">✕</button>
-                                        <input type="checkbox" class="bulk-delete-input" name="delete_ids[]" value="<?php echo (int)$item['id']; ?>" style="display:none;">
-                                    </td>
-                                </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
+                                        <button type="button" class="bulk-raise-btn" data-category="<?php echo $cid; ?>" data-amount="1000"
+                                            style="background:#007bff;color:white;border:none;border-radius:20px;padding:3px 12px;font-size:0.8rem;cursor:pointer;font-weight:600;box-shadow:none;">
+                                            +$1000
+                                        </button>
+                                    <?php endif; ?>
+                                    <button type="button" class="bulk-cat-del-btn"
+                                        data-cat-id="<?php echo $cid; ?>"
+                                        data-cat-name="<?php echo htmlspecialchars((string)$cat['name'], ENT_QUOTES, 'UTF-8'); ?>"
+                                        title="Eliminar categoría">✕</button>
+                                </span>
+                            </div>
+                            <?php if ($hasCatItems): ?>
+                            <table class="hours-table" style="width:100%;min-width:440px;margin-bottom:8px;">
+                                <thead>
+                                    <tr>
+                                        <th style="width:28px;"></th>
+                                        <th style="text-align:left;">Producto</th>
+                                        <th style="width:130px;">Precio ($)</th>
+                                        <th style="width:42px;text-align:center;">👁</th>
+                                        <th style="width:42px;text-align:center;">✕</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="bulk-sortable" data-category="<?php echo $cid; ?>">
+                                    <?php foreach ($catItems as $item): ?>
+                                    <tr data-id="<?php echo (int)$item['id']; ?>" style="<?php echo !$item['is_visible'] ? 'opacity:0.5;' : ''; ?>">
+                                        <td style="cursor:grab;color:#aaa;font-size:1.1rem;text-align:center;user-select:none;" class="bulk-drag-handle" title="Arrastrá para reordenar">⠿</td>
+                                        <td>
+                                            <?php echo htmlspecialchars((string)$item['name'], ENT_QUOTES, 'UTF-8'); ?>
+                                            <?php if (!empty($item['is_weekly_special'])): ?><span class="mini-badge dest">⭐ Destacado</span><?php endif; ?>
+                                            <?php if (!empty($item['is_secret_menu'])): ?><span class="mini-badge sec">🕵️ Secreta</span><?php endif; ?>
+                                        </td>
+                                        <td>
+                                            <input type="number" step="0.01" min="0.01" required
+                                                name="prices[<?php echo (int)$item['id']; ?>]"
+                                                value="<?php echo htmlspecialchars((string)$item['price'], ENT_QUOTES, 'UTF-8'); ?>"
+                                                style="width:115px;max-width:115px;padding:6px;border:1px solid #ccc;border-radius:5px;text-align:right;">
+                                        </td>
+                                        <td style="text-align:center;">
+                                            <button type="button"
+                                                class="bulk-vis-btn"
+                                                data-id="<?php echo (int)$item['id']; ?>"
+                                                data-csrf="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>"
+                                                title="<?php echo $item['is_visible'] ? 'Visible — clic para ocultar' : 'Oculto — clic para mostrar'; ?>"
+                                                style="background:none;border:none;box-shadow:none;cursor:pointer;font-size:1.2rem;padding:2px 6px;">
+                                                <?php echo $item['is_visible'] ? '👁' : '🚫'; ?>
+                                            </button>
+                                        </td>
+                                        <td style="text-align:center;">
+                                            <button type="button"
+                                                data-name="<?php echo htmlspecialchars((string)$item['name'], ENT_QUOTES, 'UTF-8'); ?>"
+                                                class="bulk-delete-btn"
+                                                style="background:none;border:none;box-shadow:none;cursor:pointer;font-size:1.2rem;color:#cc0000;padding:2px 6px;" title="Eliminar producto">✕</button>
+                                            <input type="checkbox" class="bulk-delete-input" name="delete_ids[]" value="<?php echo (int)$item['id']; ?>" style="display:none;">
+                                        </td>
+                                    </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                            <?php else: ?>
+                            <div class="empty-cat-note">Categoría sin productos todavía — podés cargarle ítems desde «Agregar Nuevo Producto».</div>
+                            <?php endif; ?>
                         </div>
                         <?php endforeach; ?>
                         </div>
@@ -1730,7 +1653,7 @@ $days_of_week = [
                 </div>
             </details>
 
-            <!-- 6. Agregar Nuevo Producto -->
+            <!-- 3. Agregar Nuevo Producto -->
             <details>
                 <summary>Agregar Nuevo Producto</summary>
                 <div class="editor-form">
@@ -1742,7 +1665,7 @@ $days_of_week = [
                         <label>Precio base ($):</label>
                         <input type="number" step="0.01" name="price" placeholder="Precio" min="0.01" required>
                         <label>Categoría:</label>
-                        <select name="category_id" required>
+                        <select name="category_id" id="add-item-cat-select" required>
                             <?php foreach ($categories as $category): ?>
                                 <option value="<?php echo (int)$category['id']; ?>"><?php echo htmlspecialchars((string)$category['name'], ENT_QUOTES, 'UTF-8'); ?></option>
                             <?php endforeach; ?>
@@ -1816,14 +1739,16 @@ $days_of_week = [
                 </div>
             </details>
 
-            <!-- 7. Productos Existentes (Clic para editar / Arrastrar para ordenar) -->
-            <details open>
-                <summary>Productos Existentes (Clic para editar)</summary>
+            <!-- 4. Productos Existentes (Clic para editar / Arrastrar para ordenar) -->
+            <details>
+                <summary>Productos Existentes</summary>
                 <p class="note" style="padding:14px 20px 0;">Tocá cualquier tarjeta para editar el producto o arrastrala para cambiar su orden.</p>
                 <div class="item-grid" id="item-grid">
                     <?php foreach ($menu_items_by_category as $category_id => $items): ?>
                         <?php foreach ($items as $item): ?>
-                            <div class="item-card <?php echo !$item['is_visible'] ? 'is-hidden-item' : ''; ?>" data-id="<?php echo (int)$item['id']; ?>">
+                            <div class="item-card <?php echo !$item['is_visible'] ? 'is-hidden-item' : ''; ?>"
+                                 data-id="<?php echo (int)$item['id']; ?>"
+                                 data-cat-id="<?php echo (int)$item['category_id']; ?>">
                                 <img src="<?php echo htmlspecialchars($item['image_url'] ?: 'https://via.placeholder.com/150?text=Sin+Imagen', ENT_QUOTES, 'UTF-8'); ?>" alt="<?php echo htmlspecialchars((string)$item['name'], ENT_QUOTES, 'UTF-8'); ?>" loading="lazy">
                                 <h3><?php echo htmlspecialchars((string)$item['name'], ENT_QUOTES, 'UTF-8'); ?></h3>
                                 <div class="item-card-badges">
@@ -1839,11 +1764,225 @@ $days_of_week = [
                 </div>
             </details>
 
+            <!-- 5. Datos de Transferencia y Tienda Online (Unificado) -->
+            <details>
+                <summary>Datos de Transferencia y Tienda Online</summary>
+                <div class="editor-form">
+                    <form method="POST">
+                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>">
+                        <input type="hidden" name="action" value="update_payments_and_store">
+
+                        <h3>Datos de Transferencia (Carta / WhatsApp)</h3>
+                        <p class="note">Se muestran en el carrito y en el mensaje de WhatsApp cuando el cliente elige pagar por transferencia.</p>
+                        <label>Alias CBU/CVU:</label><br>
+                        <input type="text" name="transfer_alias" value="<?php echo htmlspecialchars($transfer_alias, ENT_QUOTES, 'UTF-8'); ?>" placeholder="Alias" maxlength="190" required><br>
+                        <label>Titular de la cuenta:</label><br>
+                        <input type="text" name="transfer_holder" value="<?php echo htmlspecialchars($transfer_holder, ENT_QUOTES, 'UTF-8'); ?>" placeholder="Titular de la cuenta" maxlength="190" required>
+
+                        <hr class="sub-divider">
+
+                        <h3>Tienda Online y Pasarela Mercado Pago</h3>
+                        <?php if ($mp_token_configured): ?>
+                            <p style="background:#dcfce7;border:1.5px solid #86efac;color:#166534;padding:10px 14px;border-radius:8px;font-weight:700;margin:8px 0;">
+                                🟢 Cobro Real Activo — Access Token detectado en <code>config.php</code> (<code><?php echo htmlspecialchars($mp_token_preview, ENT_QUOTES, 'UTF-8'); ?></code>).
+                            </p>
+                        <?php else: ?>
+                            <div style="background:#fef3c7;border:1.5px solid #fcd34d;color:#92400e;padding:12px 14px;border-radius:8px;font-size:0.9rem;line-height:1.5;margin:8px 0;">
+                                <strong>🟡 Modo Demo (Sin cobro real todavía):</strong> Falta agregar tu <strong>Access Token de Producción</strong> de Mercado Pago dentro de <code>/home/c2652217/config.php</code>:<br>
+                                <code style="display:inline-block;margin-top:6px;background:#fff;padding:4px 8px;border-radius:4px;color:#1e293b;">'mp_access_token' =&gt; 'APP_USR-tu-access-token-de-produccion',</code>
+                            </div>
+                        <?php endif; ?>
+
+                        <label style="margin-top:10px;">Costo fijo de envío a domicilio en Tienda (ARS):</label>
+                        <p class="note">Si ponés <strong>0</strong>, el carrito avisa que el envío se coordina por WhatsApp. Si ponés un monto mayor a 0 (ej. <code>4500</code>), se suma automáticamente al cobro de Mercado Pago.</p>
+                        <input type="number" step="0.01" min="0" name="store_shipping_cost" value="<?php echo htmlspecialchars($store_shipping_cost, ENT_QUOTES, 'UTF-8'); ?>" placeholder="0" required>
+
+                        <p class="note" style="margin-top:10px;">
+                            <strong>¿Cómo mostrar productos en la Tienda?</strong> Creá una categoría cuyo nombre contenga la palabra <strong>Tienda</strong> (ej. <em>Tienda</em> o <em>Tienda Merch</em>) y cargale productos. Aparecerá sola en el Home y en <a href="tienda.php" target="_blank" style="color:var(--azul-elec);text-decoration:underline;">tienda.php</a>.
+                        </p>
+
+                        <div style="margin-top:12px;"><button type="submit">Guardar Transferencia y Tienda</button></div>
+                    </form>
+                </div>
+
+                <?php if (!empty($store_orders)): ?>
+                <div class="hours-table-container">
+                    <h3>Últimas Compras en Tienda</h3>
+                    <table class="hours-table">
+                        <thead>
+                            <tr>
+                                <th>Fecha / Ref</th>
+                                <th>Cliente</th>
+                                <th>Entrega</th>
+                                <th>Detalle</th>
+                                <th>Total / Estado</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($store_orders as $so):
+                                $soItems = json_decode((string)$so['items_json'], true) ?: [];
+                                $stClass = in_array($so['status'], ['approved', 'pending', 'demo'], true) ? $so['status'] : 'rejected';
+                                $stLabels = ['approved' => 'Pagado', 'pending' => 'Pendiente', 'demo' => 'Demo', 'rejected' => 'Rechazado', 'cancelled' => 'Cancelado'];
+                                $stLabel = $stLabels[$so['status']] ?? $so['status'];
+                                $waDigits = preg_replace('/\D+/', '', (string)$so['customer_phone']);
+                            ?>
+                            <tr>
+                                <td>
+                                    <strong><?php echo htmlspecialchars((string)$so['reference'], ENT_QUOTES, 'UTF-8'); ?></strong><br>
+                                    <span style="font-size:11px;color:#666;"><?php echo htmlspecialchars((string)$so['created_at'], ENT_QUOTES, 'UTF-8'); ?></span>
+                                </td>
+                                <td>
+                                    <strong><?php echo htmlspecialchars((string)$so['customer_name'], ENT_QUOTES, 'UTF-8'); ?></strong><br>
+                                    <span style="font-size:12px;"><?php echo htmlspecialchars((string)$so['customer_email'], ENT_QUOTES, 'UTF-8'); ?></span><br>
+                                    <?php if ($waDigits !== ''): ?>
+                                        <a href="https://wa.me/<?php echo htmlspecialchars($waDigits, ENT_QUOTES, 'UTF-8'); ?>" target="_blank" rel="noopener" style="color:#15803d;font-weight:700;font-size:12px;">📱 <?php echo htmlspecialchars((string)$so['customer_phone'], ENT_QUOTES, 'UTF-8'); ?></a>
+                                    <?php else: ?>
+                                        <?php echo htmlspecialchars((string)$so['customer_phone'], ENT_QUOTES, 'UTF-8'); ?>
+                                    <?php endif; ?>
+                                </td>
+                                <td>
+                                    <?php if ($so['delivery_type'] === 'envio'): ?>
+                                        <strong>🛵 Envío</strong><br>
+                                        <span style="font-size:12px;"><?php echo htmlspecialchars((string)$so['address'], ENT_QUOTES, 'UTF-8'); ?></span>
+                                    <?php else: ?>
+                                        <strong>🏪 Retiro en local</strong>
+                                    <?php endif; ?>
+                                </td>
+                                <td style="font-size:12px;">
+                                    <?php foreach ($soItems as $sit): ?>
+                                        <div>• <?php echo htmlspecialchars((string)($sit['name'] ?? ''), ENT_QUOTES, 'UTF-8'); ?> x<?php echo (int)($sit['qty'] ?? 1); ?></div>
+                                    <?php endforeach; ?>
+                                </td>
+                                <td>
+                                    <strong>$<?php echo number_format((float)$so['total'], 0, ',', '.'); ?></strong><br>
+                                    <span class="status-badge <?php echo htmlspecialchars($stClass, ENT_QUOTES, 'UTF-8'); ?>"><?php echo htmlspecialchars($stLabel, ENT_QUOTES, 'UTF-8'); ?></span>
+                                </td>
+                            </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+                <?php endif; ?>
+            </details>
+
+            <!-- 6. Pixel de Meta y Google Analytics / Tag Manager -->
+            <details>
+                <summary>Pixel de Meta y Google Analytics</summary>
+                <div class="editor-form">
+                    <h3>Trackers activos en Home, Carta y Tienda</h3>
+                    <p class="note">
+                        Estos IDs se inyectan automáticamente en <strong>arrabbiata.com.ar</strong>, <strong>carta.arrabbiata.com.ar</strong> y <strong>tienda.php</strong>, disparando eventos estándar de comercio electrónico:
+                        <code>PageView</code>, <code>AddToCart</code>, <code>InitiateCheckout</code>, <code>Purchase</code> (con código único y monto en ARS) y <code>Contact</code>.
+                    </p>
+                    <form method="POST">
+                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>">
+                        <input type="hidden" name="action" value="update_tracking_settings">
+                        <label>Google Tag Manager ID (Contenedor):</label>
+                        <input type="text" name="gtm_id" value="<?php echo htmlspecialchars($gtm_id, ENT_QUOTES, 'UTF-8'); ?>" placeholder="GTM-5JWLLKC7" maxlength="32">
+                        <label>Meta Pixel ID (Facebook / Instagram Ads):</label>
+                        <input type="text" name="meta_pixel_id" value="<?php echo htmlspecialchars($meta_pixel_id, ENT_QUOTES, 'UTF-8'); ?>" placeholder="313442609878673" maxlength="32">
+                        <label>Google Analytics 4 ID directo (opcional si ya lo cargás dentro de GTM):</label>
+                        <input type="text" name="ga4_id" value="<?php echo htmlspecialchars($ga4_id, ENT_QUOTES, 'UTF-8'); ?>" placeholder="G-XXXXXXXXXX (opcional)" maxlength="32">
+                        <div style="margin-top:8px;"><button type="submit">Guardar Trackers</button></div>
+                    </form>
+                </div>
+            </details>
+
+            <!-- 7. Publicar desde GitHub a Producción (Colapsable, al final) -->
+            <?php if ($deploy_status['available']):
+                $pendingCount = count($deploy_status['pending']);
+                $obsCount     = count($deploy_status['obsolete']);
+                $hasWork      = ($pendingCount > 0 || $obsCount > 0);
+            ?>
+            <details>
+                <summary>
+                    🚀 Publicar desde GitHub a Producción (Sin FTP)
+                    <?php if ($pendingCount > 0): ?>
+                        <span class="deploy-summary-badge"><?php echo $pendingCount; ?> cambio(s)</span>
+                    <?php else: ?>
+                        <span class="deploy-summary-badge ok">Al día</span>
+                    <?php endif; ?>
+                </summary>
+                <div class="deploy-box <?php echo $hasWork ? 'has-changes' : ''; ?>">
+                    <div class="deploy-meta">
+                        <?php if ($deploy_status['in_github']): ?>
+                            <strong>Estás en el editor de pruebas (<code>/github/editor.php</code>).</strong> Al publicar, también se actualizará <code>arrabbiata.com.ar/editor.php</code>.<br>
+                        <?php endif; ?>
+                        Origen: <code><?php echo htmlspecialchars($deploy_status['src'], ENT_QUOTES, 'UTF-8'); ?></code> &rarr;
+                        Destino: <code><?php echo htmlspecialchars($deploy_status['dst'], ENT_QUOTES, 'UTF-8'); ?></code>
+                        <?php if (!empty($deploy_status['git']['hash'])): ?>
+                            <br>Última versión en <code>/github</code>: <strong><code><?php echo htmlspecialchars($deploy_status['git']['hash'], ENT_QUOTES, 'UTF-8'); ?></code></strong>
+                            <?php if (!empty($deploy_status['git']['date'])): ?>(<?php echo htmlspecialchars($deploy_status['git']['date'], ENT_QUOTES, 'UTF-8'); ?>)<?php endif; ?>
+                            <?php if (!empty($deploy_status['git']['msg'])): ?> — <em><?php echo htmlspecialchars($deploy_status['git']['msg'], ENT_QUOTES, 'UTF-8'); ?></em><?php endif; ?>
+                        <?php endif; ?>
+                    </div>
+
+                    <?php if ($pendingCount > 0): ?>
+                        <p style="font-size:0.9rem;font-weight:700;color:#92400e;">
+                            Hay <?php echo $pendingCount; ?> archivo(s) con cambios listos para pasar a producción:
+                        </p>
+                        <div class="deploy-pill-list">
+                            <?php foreach ($deploy_status['pending'] as $pf): ?>
+                                <span class="deploy-pill <?php echo htmlspecialchars($pf['status'], ENT_QUOTES, 'UTF-8'); ?>">
+                                    <?php echo ($pf['status'] === 'nuevo' ? '+ ' : '↻ ') . htmlspecialchars($pf['file'], ENT_QUOTES, 'UTF-8'); ?>
+                                </span>
+                            <?php endforeach; ?>
+                        </div>
+                    <?php else: ?>
+                        <p style="font-size:0.92rem;font-weight:700;color:#166534;margin-bottom:8px;">
+                            ✓ Producción (<code>public_html</code> y <code>/carta</code>) está 100% al día con <code>/github</code> (<?php echo (int)$deploy_status['total_files']; ?> archivos verificados).
+                        </p>
+                    <?php endif; ?>
+
+                    <?php if ($obsCount > 0): ?>
+                        <p style="font-size:0.86rem;font-weight:700;color:#991b1b;margin-top:6px;">
+                            Archivos viejos / inseguros detectados en producción:
+                        </p>
+                        <div class="deploy-pill-list">
+                            <?php foreach ($deploy_status['obsolete'] as $of): ?>
+                                <span class="deploy-pill obs">🗑 <?php echo htmlspecialchars($of, ENT_QUOTES, 'UTF-8'); ?></span>
+                            <?php endforeach; ?>
+                        </div>
+                    <?php endif; ?>
+
+                    <form method="POST" onsubmit="return confirm('¿Publicar ahora los archivos desde /github hacia public_html y /carta? (Tus fotos en /Uploads, config.php y otras carpetas no se tocan)');" style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin-top:8px;">
+                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>">
+                        <input type="hidden" name="action" value="deploy_from_github">
+                        <?php if ($pendingCount === 0 && $obsCount === 0): ?>
+                            <input type="hidden" name="force_all" value="1">
+                        <?php endif; ?>
+                        <?php if ($obsCount > 0): ?>
+                            <label style="display:inline-flex;align-items:center;gap:6px;font-size:0.86rem;font-weight:600;color:#991b1b;cursor:pointer;margin:0;">
+                                <input type="checkbox" name="clean_obsolete" value="1" checked style="width:auto;margin:0;">
+                                Eliminar también los <?php echo $obsCount; ?> archivo(s) viejos/inseguros listados arriba
+                            </label>
+                        <?php endif; ?>
+                        <button type="submit" class="btn-deploy-now">
+                            <?php echo ($pendingCount > 0 || $obsCount > 0) ? '🚀 Publicar cambios a Producción ahora' : '🔄 Re-sincronizar todos los archivos'; ?>
+                        </button>
+                    </form>
+                </div>
+            </details>
+            <?php endif; ?>
+
             <!-- Modal de Edición -->
             <div class="modal" id="edit-item-modal">
                 <div class="modal-content">
                     <span class="modal-close" onclick="closeModal()">×</span>
                     <div class="modal-form" id="modal-form-content"></div>
+                </div>
+            </div>
+
+            <!-- Modal de Confirmación para Eliminar Categoría con Productos -->
+            <div class="modal" id="delete-cat-modal">
+                <div class="modal-content" style="max-width:460px;">
+                    <span class="modal-close" onclick="closeDeleteCatModal()">×</span>
+                    <h3 style="margin-bottom:10px;font-family:var(--font-display);color:var(--rojo);font-size:1.5rem;">⚠️ Eliminar Categoría</h3>
+                    <p id="delete-cat-modal-msg" style="font-size:0.95rem;line-height:1.5;color:var(--marron);margin-bottom:18px;"></p>
+                    <div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap;">
+                        <button type="button" onclick="closeDeleteCatModal()" style="background:#6b7280;border-color:#4b5563;box-shadow:2px 2px 0 #4b5563;">Cancelar</button>
+                        <button type="button" id="btn-confirm-delete-cat" style="background:var(--rojo);border-color:var(--rojo-d);">Sí, eliminar categoría y productos</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -2000,6 +2139,18 @@ $days_of_week = [
             });
         });
 
+        function syncCategorySelects() {
+            const sel = document.getElementById('add-item-cat-select');
+            if (!sel) return;
+            const prevVal = sel.value;
+            sel.innerHTML = ALL_CATS.map(c =>
+                `<option value="${Number(c.id)}">${escAttr(c.name)}</option>`
+            ).join('');
+            if (prevVal && ALL_CATS.some(c => String(c.id) === String(prevVal))) {
+                sel.value = prevVal;
+            }
+        }
+
         (function() {
             var bulkCatContainer = document.getElementById('bulk-cat-sortable');
             if (!bulkCatContainer) return;
@@ -2009,6 +2160,12 @@ $days_of_week = [
                 onEnd: async function() {
                     var blocks = Array.from(bulkCatContainer.querySelectorAll('.bulk-cat-block[data-cat-id]'));
                     var order  = blocks.map(function(b) { return b.dataset.catId; });
+                    // Reordenar también ALL_CATS en memoria
+                    ALL_CATS.sort(function(a, b) {
+                        return order.indexOf(String(a.id)) - order.indexOf(String(b.id));
+                    });
+                    syncCategorySelects();
+
                     var fd = new FormData();
                     fd.append('action',     'reorder_categories');
                     fd.append('order',      JSON.stringify(order));
@@ -2082,48 +2239,265 @@ $days_of_week = [
             });
         });
 
-        // ── Drag & drop en Administrar Categorías ──
-        (function() {
-            var catList    = document.getElementById('category-sortable');
-            var btnConfirm = document.getElementById('btn-confirm-cat-order');
-            var statusSpan = document.getElementById('cat-order-status');
-            if (!catList || !btnConfirm) return;
+        // ── Gestión unificada de Categorías: Agregar (+), Doble clic renombrar y Eliminar (✕) ──
+        var _pendingDeleteCat = null;
 
-            Sortable.create(catList, {
-                handle: '.cat-drag-handle',
-                animation: 150,
-                onEnd: function() {
-                    btnConfirm.style.display = 'inline-block';
-                    statusSpan.textContent = '';
+        function closeDeleteCatModal() {
+            var m = document.getElementById('delete-cat-modal');
+            if (m) m.style.display = 'none';
+            _pendingDeleteCat = null;
+        }
+
+        async function performDeleteCategory(catId, confirmWithItems, blockEl) {
+            var fd = new FormData();
+            fd.append('action',             'delete_category_ajax');
+            fd.append('category_id',        String(catId));
+            fd.append('confirm_with_items', confirmWithItems ? '1' : '');
+            fd.append('csrf_token',         CSRF_TOKEN);
+
+            try {
+                var res  = await fetch('editor.php', { method: 'POST', body: fd });
+                var data = await res.json();
+
+                if (!data.ok && data.needs_confirm) {
+                    var catObj  = ALL_CATS.find(function(c) { return String(c.id) === String(catId); });
+                    var catName = catObj ? catObj.name : 'esta categoría';
+                    openDeleteCatConfirmModal(catId, catName, data.count || 1, blockEl);
+                    return;
+                }
+
+                if (!data.ok) {
+                    alert(data.error || 'No se pudo eliminar la categoría.');
+                    return;
+                }
+
+                closeDeleteCatModal();
+                if (blockEl) blockEl.remove();
+
+                var idx = ALL_CATS.findIndex(function(c) { return String(c.id) === String(catId); });
+                if (idx !== -1) ALL_CATS.splice(idx, 1);
+                syncCategorySelects();
+
+                if (Array.isArray(data.deleted_item_ids) && data.deleted_item_ids.length > 0) {
+                    var delSet = new Set(data.deleted_item_ids.map(String));
+                    for (var i = ALL_ITEMS.length - 1; i >= 0; i--) {
+                        if (delSet.has(String(ALL_ITEMS[i].id))) ALL_ITEMS.splice(i, 1);
+                    }
+                    document.querySelectorAll('#item-grid .item-card').forEach(function(card) {
+                        if (delSet.has(String(card.dataset.id))) card.remove();
+                    });
+                }
+            } catch (e) {
+                alert('Error de conexión al eliminar la categoría.');
+            }
+        }
+
+        function openDeleteCatConfirmModal(catId, catName, itemCount, blockEl) {
+            _pendingDeleteCat = { catId: catId, blockEl: blockEl };
+            var msgEl = document.getElementById('delete-cat-modal-msg');
+            if (msgEl) {
+                msgEl.innerHTML = 'La categoría <strong>«' + escAttr(catName) + '»</strong> contiene <strong>' +
+                    Number(itemCount) + ' producto(s)</strong>.<br><br>' +
+                    'Si confirmás la eliminación, se borrarán la categoría y todos los productos que están dentro de ella.';
+            }
+            var modal = document.getElementById('delete-cat-modal');
+            if (modal) modal.style.display = 'flex';
+        }
+
+        document.getElementById('btn-confirm-delete-cat')?.addEventListener('click', function() {
+            if (!_pendingDeleteCat) return;
+            performDeleteCategory(_pendingDeleteCat.catId, true, _pendingDeleteCat.blockEl);
+        });
+
+        document.getElementById('delete-cat-modal')?.addEventListener('click', function(e) {
+            if (e.target === this) closeDeleteCatModal();
+        });
+
+        function bindBulkCategoryTitle(titleSpan) {
+            if (!titleSpan || titleSpan.dataset.boundDbl === '1') return;
+            titleSpan.dataset.boundDbl = '1';
+
+            titleSpan.addEventListener('dblclick', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (titleSpan.querySelector('input')) return;
+
+                var catId       = titleSpan.dataset.catId;
+                var currentName = titleSpan.textContent.trim();
+                var block       = titleSpan.closest('.bulk-cat-block');
+                var statusEl    = block ? block.querySelector('.bulk-cat-status') : null;
+
+                var input = document.createElement('input');
+                input.type      = 'text';
+                input.className = 'cat-inline-edit-input';
+                input.value     = currentName;
+                input.maxLength = 120;
+
+                titleSpan.textContent = '';
+                titleSpan.appendChild(input);
+                input.focus();
+                input.select();
+
+                var finished = false;
+                async function commitRename(cancel) {
+                    if (finished) return;
+                    finished = true;
+                    var nextName = input.value.trim();
+                    if (cancel || !nextName || nextName === currentName) {
+                        titleSpan.textContent = currentName;
+                        return;
+                    }
+                    titleSpan.textContent = nextName;
+
+                    var fd = new FormData();
+                    fd.append('action',        'rename_category_ajax');
+                    fd.append('category_id',   String(catId));
+                    fd.append('category_name', nextName);
+                    fd.append('csrf_token',    CSRF_TOKEN);
+                    try {
+                        var res  = await fetch('editor.php', { method: 'POST', body: fd });
+                        var data = await res.json();
+                        if (!data.ok) {
+                            titleSpan.textContent = currentName;
+                            alert(data.error || 'No se pudo renombrar la categoría.');
+                            return;
+                        }
+                        var catObj = ALL_CATS.find(function(c) { return String(c.id) === String(catId); });
+                        if (catObj) catObj.name = data.name;
+                        syncCategorySelects();
+
+                        var delBtn = block ? block.querySelector('.bulk-cat-del-btn') : null;
+                        if (delBtn) delBtn.dataset.catName = data.name;
+
+                        document.querySelectorAll('#item-grid .item-card[data-cat-id="' + catId + '"] .mini-badge.cat').forEach(function(b) {
+                            b.textContent = data.name;
+                        });
+
+                        if (statusEl) {
+                            statusEl.textContent = '✔ Guardado';
+                            setTimeout(function() { statusEl.textContent = ''; }, 2000);
+                        }
+                    } catch (err) {
+                        titleSpan.textContent = currentName;
+                        alert('Error de conexión al renombrar la categoría.');
+                    }
+                }
+
+                input.addEventListener('keydown', function(ke) {
+                    if (ke.key === 'Enter') {
+                        ke.preventDefault();
+                        commitRename(false);
+                    } else if (ke.key === 'Escape') {
+                        ke.preventDefault();
+                        commitRename(true);
+                    }
+                });
+                input.addEventListener('blur', function() {
+                    commitRename(false);
+                });
+            });
+        }
+
+        function bindBulkCategoryDeleteBtn(btn) {
+            if (!btn || btn.dataset.boundDel === '1') return;
+            btn.dataset.boundDel = '1';
+
+            btn.addEventListener('click', function() {
+                var catId   = btn.dataset.catId;
+                var catName = btn.dataset.catName || 'esta categoría';
+                var block   = btn.closest('.bulk-cat-block');
+                var rowCnt  = block ? block.querySelectorAll('tbody.bulk-sortable tr[data-id]').length : 0;
+
+                if (rowCnt > 0) {
+                    openDeleteCatConfirmModal(catId, catName, rowCnt, block);
+                } else {
+                    performDeleteCategory(catId, false, block);
                 }
             });
+        }
 
-            btnConfirm.addEventListener('click', async function() {
-                var order = Array.from(catList.querySelectorAll('li[data-id]')).map(li => li.dataset.id);
-                btnConfirm.disabled = true;
-                btnConfirm.textContent = 'Guardando…';
+        document.querySelectorAll('.bulk-cat-title').forEach(bindBulkCategoryTitle);
+        document.querySelectorAll('.bulk-cat-del-btn').forEach(bindBulkCategoryDeleteBtn);
+
+        (function() {
+            var btnToggle = document.getElementById('btn-toggle-add-cat');
+            var inlineBar = document.getElementById('add-cat-inline-bar');
+            var nameInput = document.getElementById('new-cat-name-input');
+            var btnSave   = document.getElementById('btn-save-new-cat');
+            var btnCancel = document.getElementById('btn-cancel-new-cat');
+            var container = document.getElementById('bulk-cat-sortable');
+            if (!btnToggle || !inlineBar || !nameInput || !btnSave || !btnCancel || !container) return;
+
+            btnToggle.addEventListener('click', function() {
+                var show = (inlineBar.style.display === 'none');
+                inlineBar.style.display = show ? 'block' : 'none';
+                if (show) { nameInput.value = ''; nameInput.focus(); }
+            });
+
+            btnCancel.addEventListener('click', function() {
+                inlineBar.style.display = 'none';
+                nameInput.value = '';
+            });
+
+            async function createNewCategory() {
+                var name = nameInput.value.trim();
+                if (!name) { alert('Ingresá un nombre para la categoría.'); nameInput.focus(); return; }
+
+                btnSave.disabled = true;
                 var fd = new FormData();
-                fd.append('action',     'reorder_categories');
-                fd.append('order',      JSON.stringify(order));
-                fd.append('csrf_token', CSRF_TOKEN);
+                fd.append('action',        'add_category_ajax');
+                fd.append('category_name', name);
+                fd.append('csrf_token',    CSRF_TOKEN);
+
                 try {
                     var res  = await fetch('editor.php', { method: 'POST', body: fd });
                     var data = await res.json();
-                    if (data.ok) {
-                        btnConfirm.style.display = 'none';
-                        statusSpan.style.color = '#28a745';
-                        statusSpan.textContent = '✔ Orden guardado correctamente';
-                        setTimeout(() => { statusSpan.textContent = ''; }, 3000);
-                    } else {
-                        statusSpan.style.color = '#cc0000';
-                        statusSpan.textContent = 'Error: ' + (data.error || 'desconocido');
+                    if (!data.ok || !data.category) {
+                        alert(data.error || 'No se pudo crear la categoría.');
+                        btnSave.disabled = false;
+                        return;
                     }
-                } catch (e) {
-                    statusSpan.style.color = '#cc0000';
-                    statusSpan.textContent = 'Error de conexión.';
+
+                    var cat = data.category;
+                    ALL_CATS.push(cat);
+                    syncCategorySelects();
+
+                    var block = document.createElement('div');
+                    block.className   = 'bulk-cat-block';
+                    block.dataset.catId = String(cat.id);
+                    block.style.marginBottom = '6px';
+                    block.innerHTML =
+                        '<div class="bulk-cat-header">' +
+                            '<span class="bulk-cat-handle" title="Arrastrá para reordenar categorías" style="cursor:grab;color:#888;font-size:1.15rem;user-select:none;flex-shrink:0;">⠿</span>' +
+                            '<span class="bulk-cat-title" data-cat-id="' + Number(cat.id) + '" title="Doble clic para cambiar el nombre de la categoría">' + escAttr(cat.name) + '</span>' +
+                            '<span class="bulk-cat-status" style="font-size:0.78rem;color:#16a34a;font-weight:700;">✔ Creada</span>' +
+                            '<span style="margin-left:auto;display:flex;align-items:center;gap:6px;">' +
+                                '<button type="button" class="bulk-cat-del-btn" data-cat-id="' + Number(cat.id) + '" data-cat-name="' + escAttr(cat.name) + '" title="Eliminar categoría">✕</button>' +
+                            '</span>' +
+                        '</div>' +
+                        '<div class="empty-cat-note">Categoría sin productos todavía — podés cargarle ítems desde «Agregar Nuevo Producto».</div>';
+
+                    container.appendChild(block);
+                    bindBulkCategoryTitle(block.querySelector('.bulk-cat-title'));
+                    bindBulkCategoryDeleteBtn(block.querySelector('.bulk-cat-del-btn'));
+                    setTimeout(function() {
+                        var st = block.querySelector('.bulk-cat-status');
+                        if (st) st.textContent = '';
+                    }, 2200);
+
+                    nameInput.value = '';
+                    inlineBar.style.display = 'none';
+                    block.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                } catch (err) {
+                    alert('Error de conexión al crear la categoría.');
                 }
-                btnConfirm.disabled = false;
-                btnConfirm.textContent = '✔ Confirmar nuevo orden de categorías';
+                btnSave.disabled = false;
+            }
+
+            btnSave.addEventListener('click', createNewCategory);
+            nameInput.addEventListener('keydown', function(ke) {
+                if (ke.key === 'Enter') { ke.preventDefault(); createNewCategory(); }
+                else if (ke.key === 'Escape') { ke.preventDefault(); btnCancel.click(); }
             });
         })();
 
@@ -2300,7 +2674,10 @@ $days_of_week = [
         });
 
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') closeModal();
+            if (e.key === 'Escape') {
+                closeModal();
+                closeDeleteCatModal();
+            }
         });
 
         // ── Franjas de disponibilidad por producto ──
