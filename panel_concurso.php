@@ -6,8 +6,15 @@
  * (/cumple) o de los editores (/semana, /pizza) sin sobrecargar el panel diario.
  */
 
+session_set_cookie_params([
+    'lifetime' => 0,
+    'path'     => '/',
+    'secure'   => true,
+    'httponly' => true,
+    'samesite' => 'Lax',
+]);
 session_start();
-require_once 'db_connect.php';
+require_once __DIR__ . '/db_connect.php';
 date_default_timezone_set('America/Argentina/Cordoba');
 
 if (!isset($_SESSION['admin_id'])) {

@@ -1,7 +1,11 @@
 # ============================================================
 #  Arrabbiata — .htaccess
 # ============================================================
+Options -Indexes
 RewriteEngine On
+
+# --- Bloquear acceso a directorios .git ---
+RewriteRule (^|/)\.git(/|$) - [F,L]
 
 # --- Forzar HTTPS (dominios principales) ---
 RewriteCond %{HTTPS} off
@@ -11,17 +15,20 @@ RewriteCond %{HTTP_HOST} ^(www\.)?lafamosa\.com\.ar [OR]
 RewriteCond %{HTTP_HOST} ^(www\.)?arrabbiata\.com\.ar
 RewriteRule (.*) https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L,QSA]
 
+# --- Unificar carta.php legado hacia /carta/ ---
+RewriteRule ^carta\.php$ /carta/ [R=301,L,QSA]
+
 # --- editor.arrabbiata.com.ar → editor.php ---
 RewriteCond %{HTTP_HOST} ^editor\.arrabbiata\.com\.ar$ [NC,OR]
 RewriteCond %{HTTP_HOST} ^www\.editor\.arrabbiata\.com\.ar$ [NC]
 RewriteRule ^(.*)$ https://arrabbiata.com.ar/editor.php [R=301,L]
 
-# --- Bloquear PHP en Uploads ---
-RewriteCond %{REQUEST_URI} ^/Uploads/.*\.php$ [NC]
+# --- Bloquear ejecución de scripts en Uploads ---
+RewriteCond %{REQUEST_URI} ^/Uploads/.*\.(php\d?|phtml|phar|shtml|cgi|pl|svg)$ [NC]
 RewriteRule .* - [F,L]
 
-# --- Archivos sensibles ---
-<FilesMatch "\.(log|sql|bak|env|md)$">
+# --- Archivos sensibles, backups y diagnósticos ---
+<FilesMatch "(\.(log|sql|bak|env|md|zip|tar|gz|lk)$|^error_log\.txt$|^info\.php$|^genhash\.php$|^diag.*\.php$|\-old\.(php|css|html)$|\.BKP)">
   Require all denied
 </FilesMatch>
 

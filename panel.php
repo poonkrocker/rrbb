@@ -1,16 +1,17 @@
 <?php
 /**
- * panel.php — Panel principal de estadísticas comerciales y de uso de Arrabbiata.
- *
- * Lee las tablas que llena track.php (site_visits, order_events) y las cruza
- * con menu_items / categories / business_hours para inteligencia de negocio.
- *
- * NOTA: Las estadísticas del concurso «Armá tu pizza» viven ahora en su propia
- * página separada: panel_concurso.php
+ * panel.php — Panel principal de inteligencia comercial, embudo y ventas de Arrabbiata.
  */
 
+session_set_cookie_params([
+    'lifetime' => 0,
+    'path'     => '/',
+    'secure'   => true,
+    'httponly' => true,
+    'samesite' => 'Lax',
+]);
 session_start();
-require_once 'db_connect.php';
+require_once __DIR__ . '/db_connect.php';
 date_default_timezone_set('America/Argentina/Cordoba');
 
 if (!isset($_SESSION['admin_id'])) {
@@ -18,39 +19,95 @@ if (!isset($_SESSION['admin_id'])) {
     exit;
 }
 
-// Aseguramos que las tablas existan
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
+// ── Asegurar esquema v2 (tablas + columnas nuevas) ──
 try {
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS site_visits (
             id BIGINT AUTO_INCREMENT PRIMARY KEY, created_at DATETIME NOT NULL,
             source VARCHAR(16) NOT NULL DEFAULT 'carta', path VARCHAR(255) NULL,
             referrer VARCHAR(255) NULL, ua VARCHAR(255) NULL, ip_hash CHAR(64) NULL,
-            INDEX idx_created (created_at), INDEX idx_iphash (ip_hash)
+            session_id VARCHAR(40) NULL, utm_source VARCHAR(64) NULL,
+            utm_medium VARCHAR(64) NULL, utm_campaign VARCHAR(96) NULL,
+            INDEX idx_created (created_at), INDEX idx_iphash (ip_hash), INDEX idx_session (session_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ");
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS funnel_events (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY, created_at DATETIME NOT NULL,
+            source VARCHAR(16) NOT NULL DEFAULT 'carta', step VARCHAR(32) NOT NULL,
+            session_id VARCHAR(40) NULL, ip_hash CHAR(64) NULL,
+            item_name VARCHAR(160) NULL, value DECIMAL(10,2) NULL,
+            INDEX idx_created_step (created_at, step), INDEX idx_session (session_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ");
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS order_events (
             id BIGINT AUTO_INCREMENT PRIMARY KEY, created_at DATETIME NOT NULL,
-            source VARCHAR(16) NOT NULL DEFAULT 'carta', delivery_type VARCHAR(16) NULL,
-            payment_method VARCHAR(32) NULL, total DECIMAL(10,2) NULL, pickup_time VARCHAR(32) NULL,
+            source VARCHAR(16) NOT NULL DEFAULT 'carta', order_code VARCHAR(24) NULL,
+            delivery_type VARCHAR(16) NULL, payment_method VARCHAR(32) NULL,
+            total DECIMAL(10,2) NULL, pickup_time VARCHAR(32) NULL,
             item_count INT NULL, items_json TEXT NULL, ip_hash CHAR(64) NULL,
-            INDEX idx_created (created_at)
+            phone_hash CHAR(64) NULL, session_id VARCHAR(40) NULL,
+            is_preorder TINYINT(1) NOT NULL DEFAULT 0, utm_source VARCHAR(64) NULL,
+            utm_campaign VARCHAR(96) NULL, status VARCHAR(16) NOT NULL DEFAULT 'confirmed',
+            INDEX idx_created (created_at), INDEX idx_phonehash (phone_hash)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ");
+
+    $vCols = [];
+    foreach ($pdo->query("SHOW COLUMNS FROM site_visits")->fetchAll(PDO::FETCH_ASSOC) as $c) $vCols[$c['Field']] = true;
+    if (!isset($vCols['session_id']))   $pdo->exec("ALTER TABLE site_visits ADD COLUMN session_id VARCHAR(40) NULL");
+    if (!isset($vCols['utm_source']))   $pdo->exec("ALTER TABLE site_visits ADD COLUMN utm_source VARCHAR(64) NULL");
+    if (!isset($vCols['utm_medium']))   $pdo->exec("ALTER TABLE site_visits ADD COLUMN utm_medium VARCHAR(64) NULL");
+    if (!isset($vCols['utm_campaign'])) $pdo->exec("ALTER TABLE site_visits ADD COLUMN utm_campaign VARCHAR(96) NULL");
+
+    $oCols = [];
+    foreach ($pdo->query("SHOW COLUMNS FROM order_events")->fetchAll(PDO::FETCH_ASSOC) as $c) $oCols[$c['Field']] = true;
+    if (!isset($oCols['order_code']))   $pdo->exec("ALTER TABLE order_events ADD COLUMN order_code VARCHAR(24) NULL AFTER source");
+    if (!isset($oCols['phone_hash']))   $pdo->exec("ALTER TABLE order_events ADD COLUMN phone_hash CHAR(64) NULL AFTER ip_hash");
+    if (!isset($oCols['session_id']))   $pdo->exec("ALTER TABLE order_events ADD COLUMN session_id VARCHAR(40) NULL AFTER phone_hash");
+    if (!isset($oCols['is_preorder']))  $pdo->exec("ALTER TABLE order_events ADD COLUMN is_preorder TINYINT(1) NOT NULL DEFAULT 0 AFTER session_id");
+    if (!isset($oCols['utm_source']))   $pdo->exec("ALTER TABLE order_events ADD COLUMN utm_source VARCHAR(64) NULL AFTER is_preorder");
+    if (!isset($oCols['utm_campaign'])) $pdo->exec("ALTER TABLE order_events ADD COLUMN utm_campaign VARCHAR(96) NULL AFTER utm_source");
+    if (!isset($oCols['status']))       $pdo->exec("ALTER TABLE order_events ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'confirmed' AFTER utm_campaign");
 } catch (Throwable $e) {
-    error_log('panel.php ensure tables: ' . $e->getMessage());
+    error_log('panel.php ensure schema: ' . $e->getMessage());
 }
 
-// ── Parámetros de filtro (Rango de fechas, Canal, Exclusión de bots) ──
+// ── Acción AJAX: alternar pedido confirmado <-> anulado/prueba ──
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'toggle_order_status') {
+    header('Content-Type: application/json; charset=utf-8');
+    $token = (string)($_POST['csrf_token'] ?? '');
+    if (!hash_equals($_SESSION['csrf_token'], $token)) {
+        http_response_code(403);
+        echo json_encode(['ok' => false, 'error' => 'CSRF inválido']);
+        exit;
+    }
+    $oid = (int)($_POST['id'] ?? 0);
+    if ($oid <= 0) {
+        echo json_encode(['ok' => false, 'error' => 'ID inválido']);
+        exit;
+    }
+    $stCur = $pdo->prepare("SELECT status FROM order_events WHERE id = ?");
+    $stCur->execute([$oid]);
+    $cur = (string)$stCur->fetchColumn();
+    $next = ($cur === 'cancelled') ? 'confirmed' : 'cancelled';
+    $pdo->prepare("UPDATE order_events SET status = ? WHERE id = ?")->execute([$next, $oid]);
+    echo json_encode(['ok' => true, 'status' => $next]);
+    exit;
+}
+
+// ── Parámetros de filtro ──
 $rangePreset = isset($_GET['range']) ? (string)$_GET['range'] : (isset($_GET['days']) ? (string)$_GET['days'] : '30');
-$channel     = isset($_GET['channel']) ? (string)$_GET['channel'] : 'pizzeria'; // 'pizzeria' (carta+home), 'carta', 'home', 'all'
-if (!in_array($channel, ['pizzeria', 'carta', 'home', 'all'], true)) {
+$channel     = isset($_GET['channel']) ? (string)$_GET['channel'] : 'pizzeria';
+if (!in_array($channel, ['pizzeria', 'carta', 'home', 'tienda', 'all'], true)) {
     $channel = 'pizzeria';
 }
-$hideBots    = !isset($_GET['bots']) || $_GET['bots'] !== '1'; // por defecto ocultamos bots para no distorsionar conversión
-
-$nowDt   = new DateTime('now');
-$todayDt = new DateTime('today');
+$hideBots = !isset($_GET['bots']) || $_GET['bots'] !== '1';
 
 $customFrom = isset($_GET['from']) ? trim((string)$_GET['from']) : '';
 $customTo   = isset($_GET['to'])   ? trim((string)$_GET['to'])   : '';
@@ -59,9 +116,7 @@ if ($customFrom !== '' && $customTo !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/'
     $rangePreset = 'custom';
     $sinceDt = new DateTime($customFrom . ' 00:00:00');
     $untilDt = new DateTime($customTo . ' 23:59:59');
-    if ($sinceDt > $untilDt) {
-        [$sinceDt, $untilDt] = [$untilDt, $sinceDt];
-    }
+    if ($sinceDt > $untilDt) [$sinceDt, $untilDt] = [$untilDt, $sinceDt];
 } else {
     switch ($rangePreset) {
         case 'today':
@@ -96,31 +151,23 @@ if ($customFrom !== '' && $customTo !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/'
 $since = $sinceDt->format('Y-m-d H:i:s');
 $until = $untilDt->format('Y-m-d H:i:s');
 
-// Período anterior equivalente (para calcular variación %)
 $periodSeconds = max(86400, $untilDt->getTimestamp() - $sinceDt->getTimestamp() + 1);
 $prevUntilDt   = (clone $sinceDt)->modify('-1 second');
 $prevSinceDt   = (clone $prevUntilDt)->modify('-' . ($periodSeconds - 1) . ' seconds');
 $prevSince     = $prevSinceDt->format('Y-m-d H:i:s');
 $prevUntil     = $prevUntilDt->format('Y-m-d H:i:s');
 
-// Condición SQL de canal
 function buildChannelSql(string $channel, array &$params): string {
-    if ($channel === 'carta') {
-        $params[] = 'carta';
-        return ' AND source = ? ';
-    }
-    if ($channel === 'home') {
-        $params[] = 'home';
+    if (in_array($channel, ['carta', 'home', 'tienda'], true)) {
+        $params[] = $channel;
         return ' AND source = ? ';
     }
     if ($channel === 'pizzeria') {
-        // Excluye visitas de 'cumple' para no distorsionar la conversión de venta de pizzas
         return " AND source IN ('carta', 'home', '') ";
     }
     return '';
 }
 
-// Condición SQL anti-bots sobre site_visits.ua
 function buildBotSql(bool $hideBots): string {
     if (!$hideBots) return '';
     return " AND (ua IS NULL OR (
@@ -137,15 +184,15 @@ function buildBotSql(bool $hideBots): string {
 
 $money = fn($n) => '$' . number_format((float)$n, 0, ',', '.');
 
-// ── Exportación directa de pedidos a CSV ──
+// ── Exportación CSV (solo pedidos confirmados/activos) ──
 if (isset($_GET['export']) && $_GET['export'] === 'csv') {
     try {
         $p = [$since, $until];
         $chSql = buildChannelSql($channel, $p);
         $st = $pdo->prepare("
-            SELECT id, created_at, source, delivery_type, payment_method, pickup_time, item_count, total, items_json, ip_hash
+            SELECT id, order_code, created_at, source, delivery_type, payment_method, pickup_time, is_preorder, utm_source, utm_campaign, item_count, total, items_json, COALESCE(NULLIF(phone_hash,''), ip_hash) AS cust_id
             FROM order_events
-            WHERE created_at BETWEEN ? AND ? $chSql
+            WHERE created_at BETWEEN ? AND ? AND (status IS NULL OR status != 'cancelled') $chSql
             ORDER BY created_at DESC
         ");
         $st->execute($p);
@@ -154,8 +201,8 @@ if (isset($_GET['export']) && $_GET['export'] === 'csv') {
         header('Content-Type: text/csv; charset=utf-8');
         header('Content-Disposition: attachment; filename="pedidos-arrabbiata-' . $sinceDt->format('Ymd') . '-' . $untilDt->format('Ymd') . '.csv"');
         $fp = fopen('php://output', 'w');
-        fprintf($fp, "\xEF\xBB\xBF"); // BOM UTF-8 para Excel
-        fputcsv($fp, ['ID', 'Fecha y Hora', 'Día', 'Canal', 'Entrega', 'Forma de Pago', 'Horario Elegido', 'Cant. Items', 'Total ($)', 'Detalle de Productos', 'Cliente Hash']);
+        fprintf($fp, "\xEF\xBB\xBF");
+        fputcsv($fp, ['ID', 'Código', 'Fecha y Hora', 'Día', 'Canal', 'Preventa', 'Entrega', 'Forma de Pago', 'Horario Elegido', 'Origen UTM', 'Campaña UTM', 'Unidades', 'Total ($)', 'Detalle de Productos', 'ID Cliente (Hash)']);
         $diasEs = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
         foreach ($rows as $r) {
             $itemsArr = json_decode((string)($r['items_json'] ?? ''), true);
@@ -172,16 +219,20 @@ if (isset($_GET['export']) && $_GET['export'] === 'csv') {
             $diaNombre = $ts ? $diasEs[(int)date('w', $ts)] : '';
             fputcsv($fp, [
                 $r['id'],
+                $r['order_code'] ?: '-',
                 $r['created_at'],
                 $diaNombre,
                 $r['source'],
+                !empty($r['is_preorder']) ? 'Sí (Cerrado)' : 'No (En turno)',
                 $r['delivery_type'] === 'envio' ? 'Envío' : ($r['delivery_type'] === 'retiro' ? 'Retiro' : $r['delivery_type']),
                 $r['payment_method'],
-                $r['pickup_time'] ?: '(inmediato / sin horario)',
+                $r['pickup_time'] ?: 'Ahora',
+                $r['utm_source'] ?: '',
+                $r['utm_campaign'] ?: '',
                 (int)$r['item_count'],
                 number_format((float)$r['total'], 2, '.', ''),
                 implode(' | ', $itemsTxt),
-                substr((string)$r['ip_hash'], 0, 12),
+                substr((string)$r['cust_id'], 0, 12),
             ]);
         }
         fclose($fp);
@@ -191,16 +242,15 @@ if (isset($_GET['export']) && $_GET['export'] === 'csv') {
     }
 }
 
-// ── Cargar catálogo de productos y categorías para cruzar datos ──
-$catalogByName = []; // strtolower(name) => ['category' => ..., 'price' => ..., 'is_vegan' => ..., 'is_secret' => ...]
+// ── Cargar catálogo y precios de extras ──
+$catalogByName = [];
+$extrasPriceMap = [];
 $categoriesMap = [];
 try {
-    $st = $pdo->query("SELECT id, name FROM categories");
-    foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $c) {
+    foreach ($pdo->query("SELECT id, name FROM categories")->fetchAll(PDO::FETCH_ASSOC) as $c) {
         $categoriesMap[(int)$c['id']] = (string)$c['name'];
     }
-    $st = $pdo->query("SELECT id, name, price, category_id, has_vegan_option, is_secret_menu, is_weekly_special FROM menu_items");
-    foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $mi) {
+    foreach ($pdo->query("SELECT id, name, price, category_id, is_secret_menu, is_weekly_special FROM menu_items")->fetchAll(PDO::FETCH_ASSOC) as $mi) {
         $catName = $categoriesMap[(int)$mi['category_id']] ?? 'Otras';
         $key = mb_strtolower(trim((string)$mi['name']), 'UTF-8');
         $catalogByName[$key] = [
@@ -208,88 +258,130 @@ try {
             'name'      => (string)$mi['name'],
             'price'     => (float)$mi['price'],
             'category'  => $catName,
-            'is_secret' => (bool)$mi['is_secret_menu'],
-            'is_weekly' => (bool)$mi['is_weekly_special'],
         ];
+        if (mb_strtolower(trim($catName), 'UTF-8') === 'extras') {
+            $extrasPriceMap[$key] = ['name' => (string)$mi['name'], 'price' => (float)$mi['price']];
+        }
     }
 } catch (Throwable $e) {
     error_log('panel catalog load: ' . $e->getMessage());
 }
 
-/**
- * Clasifica el nombre de un ítem del carrito devolviendo su categoría y nombre limpio.
- */
 function classifyCartItemName(string $rawName, array $catalogByName): array {
-    $clean = trim($rawName);
-    $isVegan = false;
-    if (stripos($clean, '(Vegana)') !== false) {
-        $isVegan = true;
+    $clean   = trim($rawName);
+    $isVegan = (stripos($clean, '(Vegana)') !== false);
+
+    // Extraer extras "(+ Stracciatella, + Anchoas)"
+    $extrasList = [];
+    if (preg_match('/\(\+\s*([^)]+)\)/u', $clean, $em)) {
+        $parts = preg_split('/,\s*\+?\s*/u', $em[1]);
+        foreach ($parts as $ep) {
+            $ep = trim(ltrim(trim($ep), '+'));
+            if ($ep !== '') $extrasList[] = $ep;
+        }
     }
-    // Base name antes de " (Vegana)", " — Variante", " + Pizza", " (Para tu pizza)"
-    $base = preg_replace('/\s*\((Vegana|Para tu pizza)\)/i', '', $clean);
-    if (strpos($base, ' — ') !== false) {
-        $base = trim(explode(' — ', $base)[0]);
-    }
-    if (strpos($base, ' + ') !== false) {
-        $base = trim(explode(' + ', $base)[0]);
-    }
+
+    $base = preg_replace('/\s*\(\+[^)]+\)/u', '', $clean);
+    $base = preg_replace('/\s*\((Vegana|Para tu pizza)\)/iu', '', (string)$base);
+    if (strpos($base, ' — ') !== false) $base = trim(explode(' — ', $base)[0]);
+    elseif (strpos($base, ' - ') !== false) $base = trim(explode(' - ', $base)[0]);
+    if (strpos($base, ' + ') !== false) $base = trim(explode(' + ', $base)[0]);
+
     $key = mb_strtolower(trim((string)$base), 'UTF-8');
     if (isset($catalogByName[$key])) {
         return [
-            'category' => $catalogByName[$key]['category'],
+            'base_name'     => $catalogByName[$key]['name'],
+            'category'      => $catalogByName[$key]['category'],
             'catalog_price' => $catalogByName[$key]['price'],
-            'is_vegan' => $isVegan,
+            'is_vegan'      => $isVegan,
+            'extras'        => $extrasList,
         ];
     }
-    // Búsqueda parcial por prefijo
     foreach ($catalogByName as $k => $info) {
         if ($k !== '' && (mb_strpos($key, $k, 0, 'UTF-8') === 0 || mb_strpos($k, $key, 0, 'UTF-8') === 0)) {
             return [
-                'category' => $info['category'],
+                'base_name'     => $info['name'],
+                'category'      => $info['category'],
                 'catalog_price' => $info['price'],
-                'is_vegan' => $isVegan,
+                'is_vegan'      => $isVegan,
+                'extras'        => $extrasList,
             ];
         }
     }
     return [
-        'category' => 'Otros / Especiales',
+        'base_name'     => $base ?: $clean,
+        'category'      => 'Otros / Especiales',
         'catalog_price' => 0.0,
-        'is_vegan' => $isVegan,
+        'is_vegan'      => $isVegan,
+        'extras'        => $extrasList,
     ];
 }
 
-// ── Función para calcular resumen KPI de un intervalo ──
+function classifyTrafficSource(?string $utmSrc, ?string $ref): string {
+    $u = strtolower(trim((string)$utmSrc));
+    $r = strtolower(trim((string)$ref));
+    if ($u !== '') {
+        if (strpos($u, 'link') !== false || strpos($u, 'bio') !== false) return 'Link en Bio (/links)';
+        if (strpos($u, 'ig') !== false || strpos($u, 'insta') !== false) return 'Instagram (UTM/Ads)';
+        if (strpos($u, 'fb') !== false || strpos($u, 'face') !== false || strpos($u, 'meta') !== false) return 'Facebook / Meta Ads';
+        if (strpos($u, 'google') !== false) return 'Google Ads / UTM';
+        if (strpos($u, 'qr') !== false) return 'Código QR';
+        return 'UTM: ' . $utmSrc;
+    }
+    if ($r === '' || strpos($r, 'arrabbiata.com.ar') !== false) {
+        if (strpos($r, 'links.arrabbiata') !== false || strpos($r, '/links') !== false) return 'Link en Bio (/links)';
+        return 'Directo / QR / Bio';
+    }
+    if (strpos($r, 'instagram') !== false || strpos($r, 'ig.me') !== false) return 'Instagram';
+    if (strpos($r, 'google') !== false || strpos($r, 'maps') !== false) return 'Google / Maps';
+    if (strpos($r, 'whatsapp') !== false || strpos($r, 'wa.me') !== false) return 'WhatsApp';
+    if (strpos($r, 'facebook') !== false || strpos($r, 'fb.') !== false) return 'Facebook';
+    return 'Otros sitios';
+}
+
+// ── KPIs de un período (identificando clientes recurrentes por phone_hash o ip_hash) ──
 function fetchPeriodKpis(PDO $pdo, string $from, string $to, string $channel, bool $hideBots): array {
     $res = [
-        'visitas' => 0, 'unicos' => 0, 'bots_filtrados' => 0,
+        'visitas' => 0, 'unicos' => 0, 'sesiones' => 0, 'bots_filtrados' => 0,
         'pedidos' => 0, 'clientes_unicos' => 0, 'clientes_recurrentes' => 0,
-        'facturacion' => 0.0, 'items' => 0,
+        'facturacion' => 0.0, 'items' => 0, 'preorders' => 0, 'preorder_rev' => 0.0,
     ];
     try {
-        $pVis = [$from, $to];
+        $pVis  = [$from, $to];
         $chSql = buildChannelSql($channel, $pVis);
         $botSql = buildBotSql($hideBots);
-        $st = $pdo->prepare("SELECT COUNT(*) c, COUNT(DISTINCT ip_hash) u FROM site_visits WHERE created_at BETWEEN ? AND ? $chSql $botSql");
+        $st = $pdo->prepare("
+            SELECT COUNT(*) c,
+                   COUNT(DISTINCT ip_hash) u,
+                   COUNT(DISTINCT COALESCE(NULLIF(session_id,''), ip_hash)) s
+            FROM site_visits
+            WHERE created_at BETWEEN ? AND ? $chSql $botSql
+        ");
         $st->execute($pVis);
         $row = $st->fetch(PDO::FETCH_ASSOC) ?: [];
-        $res['visitas'] = (int)($row['c'] ?? 0);
-        $res['unicos']  = (int)($row['u'] ?? 0);
+        $res['visitas']  = (int)($row['c'] ?? 0);
+        $res['unicos']   = (int)($row['u'] ?? 0);
+        $res['sesiones'] = (int)($row['s'] ?? 0);
 
         if ($hideBots) {
-            $pAll = [$from, $to];
+            $pAll  = [$from, $to];
             $chAll = buildChannelSql($channel, $pAll);
-            $stB = $pdo->prepare("SELECT COUNT(*) FROM site_visits WHERE created_at BETWEEN ? AND ? $chAll");
+            $stB   = $pdo->prepare("SELECT COUNT(*) FROM site_visits WHERE created_at BETWEEN ? AND ? $chAll");
             $stB->execute($pAll);
-            $totalRaw = (int)$stB->fetchColumn();
-            $res['bots_filtrados'] = max(0, $totalRaw - $res['visitas']);
+            $res['bots_filtrados'] = max(0, (int)$stB->fetchColumn() - $res['visitas']);
         }
 
-        $pOrd = [$from, $to];
+        $pOrd  = [$from, $to];
         $chOrd = buildChannelSql($channel, $pOrd);
         $st = $pdo->prepare("
-            SELECT COUNT(*) c, COUNT(DISTINCT ip_hash) u, COALESCE(SUM(total),0) s, COALESCE(SUM(item_count),0) it
+            SELECT COUNT(*) c,
+                   COUNT(DISTINCT COALESCE(NULLIF(phone_hash,''), ip_hash)) u,
+                   COALESCE(SUM(total), 0) s,
+                   COALESCE(SUM(item_count), 0) it,
+                   COALESCE(SUM(CASE WHEN is_preorder = 1 THEN 1 ELSE 0 END), 0) pre_c,
+                   COALESCE(SUM(CASE WHEN is_preorder = 1 THEN total ELSE 0 END), 0) pre_s
             FROM order_events
-            WHERE created_at BETWEEN ? AND ? $chOrd
+            WHERE created_at BETWEEN ? AND ? AND (status IS NULL OR status != 'cancelled') $chOrd
         ");
         $st->execute($pOrd);
         $row = $st->fetch(PDO::FETCH_ASSOC) ?: [];
@@ -297,13 +389,20 @@ function fetchPeriodKpis(PDO $pdo, string $from, string $to, string $channel, bo
         $res['clientes_unicos'] = (int)($row['u'] ?? 0);
         $res['facturacion']     = (float)($row['s'] ?? 0);
         $res['items']           = (int)($row['it'] ?? 0);
+        $res['preorders']       = (int)($row['pre_c'] ?? 0);
+        $res['preorder_rev']    = (float)($row['pre_s'] ?? 0);
 
-        // Clientes con 2+ pedidos en el período
         $stRec = $pdo->prepare("
             SELECT COUNT(*) FROM (
-                SELECT ip_hash FROM order_events
-                WHERE created_at BETWEEN ? AND ? AND ip_hash IS NOT NULL AND ip_hash != '' $chOrd
-                GROUP BY ip_hash HAVING COUNT(*) >= 2
+                SELECT COALESCE(NULLIF(phone_hash,''), ip_hash) AS cid
+                FROM order_events
+                WHERE created_at BETWEEN ? AND ?
+                  AND (status IS NULL OR status != 'cancelled')
+                  AND COALESCE(NULLIF(phone_hash,''), ip_hash) IS NOT NULL
+                  AND COALESCE(NULLIF(phone_hash,''), ip_hash) != ''
+                  $chOrd
+                GROUP BY cid
+                HAVING COUNT(*) >= 2
             ) t
         ");
         $stRec->execute($pOrd);
@@ -331,7 +430,43 @@ function fmtDelta(float $curr, float $prev): string {
     return '<span class="delta ' . $cls . '" title="Período anterior: ' . number_format($prev, 1, ',', '.') . '">' . $sign . number_format($pct, 1, ',', '.') . '%</span>';
 }
 
-// ── Series diarias (Visitas, Pedidos, Facturación) ──
+// ── Embudo de Conversión por sesiones únicas ──
+$funnelSteps = [
+    'view'             => $kpi['sesiones'] > 0 ? $kpi['sesiones'] : $kpi['unicos'],
+    'add_to_cart'      => 0,
+    'open_cart'        => 0,
+    'open_pickup_slot' => 0,
+    'order'            => 0,
+];
+try {
+    $pFun  = [$since, $until];
+    $chFun = buildChannelSql($channel, $pFun);
+    $stF = $pdo->prepare("
+        SELECT step, COUNT(DISTINCT COALESCE(NULLIF(session_id,''), ip_hash)) AS cnt
+        FROM funnel_events
+        WHERE created_at BETWEEN ? AND ? $chFun
+        GROUP BY step
+    ");
+    $stF->execute($pFun);
+    foreach ($stF->fetchAll(PDO::FETCH_ASSOC) as $fr) {
+        $sk = (string)$fr['step'];
+        if (isset($funnelSteps[$sk])) $funnelSteps[$sk] = (int)$fr['cnt'];
+    }
+
+    $pOrdF  = [$since, $until];
+    $chOrdF = buildChannelSql($channel, $pOrdF);
+    $stOF = $pdo->prepare("
+        SELECT COUNT(DISTINCT COALESCE(NULLIF(session_id,''), NULLIF(phone_hash,''), ip_hash))
+        FROM order_events
+        WHERE created_at BETWEEN ? AND ? AND (status IS NULL OR status != 'cancelled') $chOrdF
+    ");
+    $stOF->execute($pOrdF);
+    $funnelSteps['order'] = (int)$stOF->fetchColumn();
+} catch (Throwable $e) {
+    error_log('panel funnel query: ' . $e->getMessage());
+}
+
+// ── Series diarias, orígenes, dispositivos y pedidos ──
 $labels = []; $visByDay = []; $ordByDay = []; $revByDay = [];
 $cursor = new DateTime($sinceDt->format('Y-m-d'));
 $endDay = new DateTime($untilDt->format('Y-m-d'));
@@ -347,32 +482,28 @@ while ($cursor <= $endDay) {
     $cursor->modify('+1 day');
 }
 
-// Estructuras para análisis profundo
-$dowVisits = array_fill(0, 7, 0); // 0=Lunes ... 6=Domingo
-$dowOrders = array_fill(0, 7, 0);
-$dowRev    = array_fill(0, 7, 0.0);
+$dowVisits     = array_fill(0, 7, 0);
+$dowOrders     = array_fill(0, 7, 0);
+$dowRev        = array_fill(0, 7, 0.0);
 $heatmapOrders = array_fill(0, 7, array_fill(0, 24, 0));
 $heatmapVisits = array_fill(0, 7, array_fill(0, 24, 0));
 
-$referrers = ['Directo / QR' => 0, 'Instagram' => 0, 'Google / Maps' => 0, 'WhatsApp' => 0, 'Facebook' => 0, 'Otros' => 0];
-$devices   = ['Celular (Android)' => 0, 'Celular (iPhone)' => 0, 'Computadora (PC/Mac)' => 0, 'Otros' => 0];
-$channelsVis = [];
-$channelsOrd = [];
-$channelsRev = [];
+$attrSources = []; // origen => ['vis'=>0, 'ord'=>0, 'rev'=>0.0]
+$devices     = ['Celular (Android)' => 0, 'Celular (iPhone)' => 0, 'Computadora (PC/Mac)' => 0, 'Otros' => 0];
+$channelsVis = []; $channelsOrd = []; $channelsRev = [];
 
 try {
-    // 1. Recorremos site_visits del período
-    $pVis = [$since, $until];
+    $pVis  = [$since, $until];
     $chSql = buildChannelSql($channel, $pVis);
     $botSql = buildBotSql($hideBots);
-    $st = $pdo->prepare("SELECT created_at, source, referrer, ua FROM site_visits WHERE created_at BETWEEN ? AND ? $chSql $botSql");
+    $st = $pdo->prepare("SELECT created_at, source, referrer, ua, utm_source, utm_campaign FROM site_visits WHERE created_at BETWEEN ? AND ? $chSql $botSql");
     $st->execute($pVis);
     while ($v = $st->fetch(PDO::FETCH_ASSOC)) {
         $ts = strtotime((string)$v['created_at']);
         if ($ts) {
             $d = date('Y-m-d', $ts);
             if (isset($idxByDate[$d])) $visByDay[$idxByDate[$d]]++;
-            $w = ((int)date('N', $ts)) - 1; // 0=Lunes..6=Domingo
+            $w = ((int)date('N', $ts)) - 1;
             $h = (int)date('G', $ts);
             $dowVisits[$w]++;
             $heatmapVisits[$w][$h]++;
@@ -380,57 +511,42 @@ try {
         $src = trim((string)($v['source'] ?? '')) ?: 'carta';
         $channelsVis[$src] = ($channelsVis[$src] ?? 0) + 1;
 
-        // Clasificar referrer
-        $ref = strtolower(trim((string)($v['referrer'] ?? '')));
-        if ($ref === '' || strpos($ref, 'arrabbiata.com.ar') !== false) {
-            $referrers['Directo / QR']++;
-        } elseif (strpos($ref, 'instagram') !== false || strpos($ref, 'ig.me') !== false) {
-            $referrers['Instagram']++;
-        } elseif (strpos($ref, 'google') !== false || strpos($ref, 'maps') !== false) {
-            $referrers['Google / Maps']++;
-        } elseif (strpos($ref, 'whatsapp') !== false || strpos($ref, 'wa.me') !== false) {
-            $referrers['WhatsApp']++;
-        } elseif (strpos($ref, 'facebook') !== false || strpos($ref, 'fb.') !== false) {
-            $referrers['Facebook']++;
-        } else {
-            $referrers['Otros']++;
-        }
+        $originLabel = classifyTrafficSource($v['utm_source'] ?? null, $v['referrer'] ?? null);
+        if (!isset($attrSources[$originLabel])) $attrSources[$originLabel] = ['vis' => 0, 'ord' => 0, 'rev' => 0.0];
+        $attrSources[$originLabel]['vis']++;
 
-        // Clasificar dispositivo
         $ua = strtolower((string)($v['ua'] ?? ''));
-        if (strpos($ua, 'iphone') !== false || strpos($ua, 'ipad') !== false) {
-            $devices['Celular (iPhone)']++;
-        } elseif (strpos($ua, 'android') !== false) {
-            $devices['Celular (Android)']++;
-        } elseif (strpos($ua, 'windows') !== false || strpos($ua, 'macintosh') !== false || strpos($ua, 'linux x86') !== false) {
-            $devices['Computadora (PC/Mac)']++;
-        } else {
-            $devices['Otros']++;
-        }
+        if (strpos($ua, 'iphone') !== false || strpos($ua, 'ipad') !== false) $devices['Celular (iPhone)']++;
+        elseif (strpos($ua, 'android') !== false) $devices['Celular (Android)']++;
+        elseif (strpos($ua, 'windows') !== false || strpos($ua, 'macintosh') !== false || strpos($ua, 'linux x86') !== false) $devices['Computadora (PC/Mac)']++;
+        else $devices['Otros']++;
     }
-    arsort($referrers);
-    $referrers = array_filter($referrers, fn($v) => $v > 0);
-    $devices   = array_filter($devices, fn($v) => $v > 0);
+    $devices = array_filter($devices, fn($v) => $v > 0);
 } catch (Throwable $e) {
     error_log('panel visits analysis: ' . $e->getMessage());
 }
 
-// 2. Recorremos order_events del período (una sola pasada en memoria para todas las métricas de pedidos)
 $pagoCount = []; $pagoRev = [];
 $entregaCount = []; $entregaRev = [];
 $franjas = [];
-$scheduledVsAsap = ['Horario específico (ej. 21:15)' => 0, 'Lo antes posible / Inmediato' => 0, 'Programado (día siguiente)' => 0];
-$prodStats = []; // name => ['qty' => 0, 'rev' => 0.0, 'orders' => 0, 'category' => '']
-$catStats  = []; // cat  => ['qty' => 0, 'rev' => 0.0]
-$pairStats = []; // "A + B" => count
-$veganUnits = 0; $totalPizzaUnits = 0;
+$timingModes = [
+    '⚡ Ahora (lo antes posible)' => 0,
+    '🕒 Horario específico del turno' => 0,
+    '📅 Preventa (pedido con local cerrado)' => 0,
+];
+$prodStats = [];
+$catStats  = [];
+$pairStats = [];
+$extrasStats = []; // extraName => ['qty'=>0, 'rev'=>0.0]
+$ordersWithExtras = 0;
+$veganUnits = 0;
 $recentOrders = [];
 
 try {
-    $pOrd = [$since, $until];
+    $pOrd  = [$since, $until];
     $chOrd = buildChannelSql($channel, $pOrd);
     $st = $pdo->prepare("
-        SELECT id, created_at, source, delivery_type, payment_method, total, pickup_time, item_count, items_json, ip_hash
+        SELECT id, order_code, created_at, source, delivery_type, payment_method, total, pickup_time, item_count, items_json, ip_hash, phone_hash, is_preorder, utm_source, utm_campaign, status
         FROM order_events
         WHERE created_at BETWEEN ? AND ? $chOrd
         ORDER BY created_at DESC
@@ -438,7 +554,15 @@ try {
     $st->execute($pOrd);
     $allOrders = $st->fetchAll(PDO::FETCH_ASSOC);
 
-    foreach ($allOrders as $idx => $o) {
+    foreach ($allOrders as $o) {
+        if (count($recentOrders) < 50) {
+            $recentOrders[] = $o;
+        }
+        // Si el pedido fue marcado como anulado/prueba, mostrarlo en la tabla inferior pero excluirlo de KPIs y gráficos
+        if (($o['status'] ?? 'confirmed') === 'cancelled') {
+            continue;
+        }
+
         $tot = (float)($o['total'] ?? 0);
         $ts  = strtotime((string)$o['created_at']);
         if ($ts) {
@@ -458,43 +582,47 @@ try {
         $channelsOrd[$src] = ($channelsOrd[$src] ?? 0) + 1;
         $channelsRev[$src] = ($channelsRev[$src] ?? 0.0) + $tot;
 
-        // Pago
+        $originLabel = classifyTrafficSource($o['utm_source'] ?? null, null);
+        if (!isset($attrSources[$originLabel])) $attrSources[$originLabel] = ['vis' => 0, 'ord' => 0, 'rev' => 0.0];
+        $attrSources[$originLabel]['ord']++;
+        $attrSources[$originLabel]['rev'] += $tot;
+
         $pm = trim((string)($o['payment_method'] ?? '')) ?: '(sin dato)';
         $pagoCount[$pm] = ($pagoCount[$pm] ?? 0) + 1;
         $pagoRev[$pm]   = ($pagoRev[$pm]   ?? 0.0) + $tot;
 
-        // Entrega
         $dtRaw = trim((string)($o['delivery_type'] ?? ''));
         $dtLbl = $dtRaw === 'envio' ? '🛵 Envío a domicilio' : ($dtRaw === 'retiro' ? '🏪 Retiro en local' : '(sin dato)');
         $entregaCount[$dtLbl] = ($entregaCount[$dtLbl] ?? 0) + 1;
         $entregaRev[$dtLbl]   = ($entregaRev[$dtLbl]   ?? 0.0) + $tot;
 
-        // Franja horaria
         $pt = trim((string)($o['pickup_time'] ?? ''));
-        if ($pt === '' || stripos($pt, 'antes posible') !== false) {
-            $scheduledVsAsap['Lo antes posible / Inmediato']++;
-            $ptKey = $pt !== '' ? $pt : 'Inmediato (Home)';
-        } elseif (preg_match('/(lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo)/i', $pt)) {
-            $scheduledVsAsap['Programado (día siguiente)']++;
-            $ptKey = $pt;
+        $isPre = !empty($o['is_preorder']);
+        if ($isPre) {
+            $timingModes['📅 Preventa (pedido con local cerrado)']++;
+        } elseif ($pt === '' || stripos($pt, 'ahora') !== false || stripos($pt, 'antes posible') !== false) {
+            $timingModes['⚡ Ahora (lo antes posible)']++;
         } else {
-            $scheduledVsAsap['Horario específico (ej. 21:15)']++;
-            // Extraer HH:MM si viene con prefijo "hoy 21:00"
-            if (preg_match('/(\d{2}:\d{2})/', $pt, $m)) {
-                $ptKey = $m[1];
-            } else {
-                $ptKey = $pt;
-            }
+            $timingModes['🕒 Horario específico del turno']++;
+        }
+
+        if ($pt === '' || stripos($pt, 'ahora') !== false || stripos($pt, 'antes posible') !== false) {
+            $ptKey = '⚡ Ahora';
+        } elseif (preg_match('/(\d{2}:\d{2})/', $pt, $m)) {
+            $ptKey = $m[1];
+        } else {
+            $ptKey = $pt;
         }
         $franjas[$ptKey] = ($franjas[$ptKey] ?? 0) + 1;
 
-        // Productos e ítems
         $items = json_decode((string)($o['items_json'] ?? ''), true);
         $namesInThisOrder = [];
+        $orderHasExtra = false;
+
         if (is_array($items)) {
             foreach ($items as $it) {
                 $name = trim((string)($it['name'] ?? ''));
-                if ($name === '') continue;
+                if ($name === '' || stripos($name, 'Recargo Tarjeta') === 0) continue;
                 $qty   = max(1, (int)($it['qty'] ?? 1));
                 $price = isset($it['price']) && is_numeric($it['price']) ? (float)$it['price'] : 0.0;
 
@@ -508,9 +636,9 @@ try {
                 if (!isset($prodStats[$name])) {
                     $prodStats[$name] = ['qty' => 0, 'rev' => 0.0, 'orders' => 0, 'category' => $catName];
                 }
-                $prodStats[$name]['qty'] += $qty;
-                $prodStats[$name]['rev'] += $lineRev;
-                $prodStats[$name]['orders']++;
+                $prodStats[$name]['qty']    += $qty;
+                $prodStats[$name]['rev']    += $lineRev;
+                $prodStats[$name]['orders'] += 1;
 
                 if (!isset($catStats[$catName])) {
                     $catStats[$catName] = ['qty' => 0, 'rev' => 0.0];
@@ -519,13 +647,26 @@ try {
                 $catStats[$catName]['rev'] += $lineRev;
 
                 if ($meta['is_vegan']) $veganUnits += $qty;
-                $totalPizzaUnits += $qty;
 
-                $namesInThisOrder[$name] = true;
+                if (!empty($meta['extras'])) {
+                    $orderHasExtra = true;
+                    foreach ($meta['extras'] as $exName) {
+                        $exKey = mb_strtolower($exName, 'UTF-8');
+                        $exUnitPrice = $extrasPriceMap[$exKey]['price'] ?? 0.0;
+                        $exCleanName = $extrasPriceMap[$exKey]['name'] ?? $exName;
+                        if (!isset($extrasStats[$exCleanName])) {
+                            $extrasStats[$exCleanName] = ['qty' => 0, 'rev' => 0.0];
+                        }
+                        $extrasStats[$exCleanName]['qty'] += $qty;
+                        $extrasStats[$exCleanName]['rev'] += $exUnitPrice * $qty;
+                    }
+                }
+
+                $namesInThisOrder[$meta['base_name']] = true;
             }
         }
+        if ($orderHasExtra) $ordersWithExtras++;
 
-        // Pares de productos (Market Basket)
         $uniqNames = array_keys($namesInThisOrder);
         sort($uniqNames);
         $nUniq = count($uniqNames);
@@ -537,19 +678,16 @@ try {
                 }
             }
         }
-
-        if (count($recentOrders) < 40) {
-            $recentOrders[] = $o;
-        }
     }
 
     arsort($pagoCount);
     arsort($entregaCount);
     ksort($franjas);
     arsort($pairStats);
+    uasort($extrasStats, fn($a, $b) => $b['qty'] <=> $a['qty']);
+    uasort($attrSources, fn($a, $b) => ($b['rev'] <=> $a['rev']) ?: ($b['vis'] <=> $a['vis']));
     $topPairs = array_slice($pairStats, 0, 8, true);
 
-    // Ordenar productos por unidades y por facturación
     $prodByQty = $prodStats;
     uasort($prodByQty, fn($a, $b) => $b['qty'] <=> $a['qty']);
     $topProdQty = array_slice($prodByQty, 0, 12, true);
@@ -563,7 +701,6 @@ try {
     error_log('panel orders analysis: ' . $e->getMessage());
 }
 
-// Helper para mantener filtros en links
 function filterUrl(array $overrides = []): string {
     $q = array_merge($_GET, $overrides);
     if (isset($overrides['range']) && $overrides['range'] !== 'custom') {
@@ -573,12 +710,14 @@ function filterUrl(array $overrides = []): string {
 }
 
 $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
+$extrasAttachPct = $kpi['pedidos'] > 0 ? ($ordersWithExtras / $kpi['pedidos']) * 100.0 : 0.0;
 ?>
 <!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow">
 <title>Estadísticas — Arrabbiata</title>
 <link rel="icon" type="image/png" href="favicon.png"/>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -598,10 +737,9 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
     .topbar nav a.btn-csv{background:var(--verde-wa);color:#062e15;border-color:#128c50}
     .topbar nav a.btn-csv:hover{background:#1ebe5d;color:#fff}
 
-    .wrap{max-width:1220px;margin:0 auto;padding:20px 16px 0}
+    .wrap{max-width:1240px;margin:0 auto;padding:20px 16px 0}
     .disclaimer{background:#fff;border-left:4px solid var(--azul);padding:10px 14px;font-size:.84rem;margin-bottom:16px;border-radius:4px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
 
-    /* Barra de filtros */
     .filter-bar{background:#fff;border:2px solid var(--ocre);border-radius:8px;padding:12px 14px;margin-bottom:20px;display:flex;flex-wrap:wrap;gap:14px;align-items:center;justify-content:space-between}
     .filter-group{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
     .filter-group .lbl{font-size:.76rem;text-transform:uppercase;font-weight:700;letter-spacing:.04em;color:#7a6a54;margin-right:4px}
@@ -614,19 +752,17 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
     .custom-dates input[type="date"]{padding:5px 8px;border:1.5px solid var(--ocre-d);border-radius:5px;font-family:inherit;font-size:.82rem;color:var(--marron)}
     .custom-dates button{padding:6px 10px;background:var(--azul);color:#fff;border:none;border-radius:5px;font-weight:600;font-size:.82rem;cursor:pointer}
 
-    /* KPIs */
-    .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:12px;margin-bottom:22px}
+    .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:22px}
     .kpi{background:#fff;border:2.5px solid var(--rojo);border-radius:8px;padding:13px 15px;box-shadow:4px 4px 0 var(--rojo-d);display:flex;flex-direction:column;justify-content:space-between}
     .kpi-top{display:flex;justify-content:space-between;align-items:flex-start;gap:6px}
-    .kpi .num{font-size:1.65rem;font-weight:700;color:var(--rojo);line-height:1.1}
-    .kpi .lbl{font-size:.76rem;text-transform:uppercase;letter-spacing:.05em;opacity:.8;margin-top:4px;font-weight:700}
-    .kpi .sub{font-size:.76rem;color:#6b5b47;margin-top:4px}
+    .kpi .num{font-size:1.58rem;font-weight:700;color:var(--rojo);line-height:1.1}
+    .kpi .lbl{font-size:.75rem;text-transform:uppercase;letter-spacing:.05em;opacity:.82;margin-top:4px;font-weight:700}
+    .kpi .sub{font-size:.75rem;color:#6b5b47;margin-top:4px}
     .delta{font-size:.72rem;font-weight:700;padding:2px 6px;border-radius:99px;white-space:nowrap}
     .delta.up{background:#dcfce7;color:#15803d}
     .delta.down{background:#fee2e2;color:#b91c1c}
     .delta.neutral{background:#f3f4f6;color:#6b7280}
 
-    /* Grilla de tarjetas */
     .grid{display:grid;grid-template-columns:repeat(12,1fr);gap:18px;margin-bottom:18px}
     .card{background:#fff;border:2px solid var(--ocre);border-radius:8px;padding:16px;grid-column:span 6;display:flex;flex-direction:column}
     .card.full{grid-column:1 / -1}
@@ -636,21 +772,34 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
     .card-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap}
     .card h2{font-size:1rem;color:var(--marron);font-weight:700}
     .card .hint{font-size:.78rem;color:#7a6a54}
-    .empty{color:#999;font-size:.9rem;padding:28px 0;text-align:center}
+    .empty{color:#999;font-size:.9rem;padding:24px 0;text-align:center}
     canvas{max-height:310px}
 
-    /* Tablas internas */
-    .data-table{width:100%;border-collapse:collapse;font-size:.86rem}
+    /* Embudo visual */
+    .funnel-list{display:flex;flex-direction:column;gap:8px}
+    .funnel-row{display:grid;grid-template-columns:210px 1fr 90px;gap:10px;align-items:center;font-size:.86rem}
+    @media(max-width:640px){ .funnel-row{grid-template-columns:1fr;gap:4px} }
+    .funnel-bar-bg{background:#f5efe3;border-radius:6px;height:24px;overflow:hidden;position:relative}
+    .funnel-bar-fill{height:100%;background:linear-gradient(90deg,var(--rojo),#e84a3a);border-radius:6px;transition:width .3s}
+    .funnel-pct{text-align:right;font-weight:700;font-variant-numeric:tabular-nums;color:var(--marron)}
+
+    .data-table{width:100%;border-collapse:collapse;font-size:.85rem}
     .data-table th,.data-table td{padding:8px 10px;text-align:left;border-bottom:1px solid #eee0c8;vertical-align:middle}
-    .data-table th{color:var(--rojo);text-transform:uppercase;font-size:.73rem;letter-spacing:.04em;background:#fcf9f2;font-weight:700}
+    .data-table th{color:var(--rojo);text-transform:uppercase;font-size:.72rem;letter-spacing:.04em;background:#fcf9f2;font-weight:700}
     .data-table tr:hover td{background:#fdfaf4}
+    .data-table tr.is-cancelled td{opacity:.48;text-decoration:line-through}
+    .data-table tr.is-cancelled td:last-child{opacity:1;text-decoration:none}
     .data-table td.num,.data-table th.num{text-align:right;font-variant-numeric:tabular-nums}
     .badge-cat{display:inline-block;padding:2px 8px;border-radius:99px;font-size:.72rem;font-weight:600;background:#f7efdf;color:var(--marron);border:1px solid var(--ocre)}
     .badge-src{display:inline-block;padding:2px 7px;border-radius:4px;font-size:.72rem;font-weight:700;text-transform:uppercase}
     .badge-src.carta{background:#fee2e2;color:var(--rojo)}
     .badge-src.home{background:#dbeafe;color:var(--azul)}
+    .badge-src.tienda{background:#dcfce7;color:#15803d}
 
-    /* Mapa de calor */
+    .btn-status{border:1px solid #ccc;background:#fff;border-radius:5px;padding:3px 8px;font-size:.75rem;font-weight:700;cursor:pointer}
+    .btn-status.ok{color:#15803d;border-color:#86efac;background:#f0fdf4}
+    .btn-status.cancel{color:#b91c1c;border-color:#fca5a5;background:#fef2f2}
+
     .heatmap-wrap{overflow-x:auto}
     .heatmap{width:100%;border-collapse:separate;border-spacing:3px;font-size:.75rem;min-width:640px}
     .heatmap th{padding:4px;color:#7a6a54;font-weight:600;text-align:center}
@@ -658,15 +807,14 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
     .heatmap td.cell{text-align:center;padding:6px 2px;border-radius:4px;font-weight:600;font-variant-numeric:tabular-nums;transition:transform .1s}
     .heatmap td.cell:hover{transform:scale(1.12);outline:1.5px solid var(--marron)}
 
-    /* Buscador tabla de pedidos */
     .search-input{padding:6px 12px;border:1.5px solid var(--ocre-d);border-radius:6px;font-size:.85rem;font-family:inherit;min-width:220px}
 </style>
 </head>
 <body>
     <div class="topbar">
-        <h1>📊 Estadísticas — Arrabbiata</h1>
+        <h1>📊 Estadísticas Comerciales — Arrabbiata</h1>
         <nav>
-            <a href="<?php echo htmlspecialchars(filterUrl(['export' => 'csv'])); ?>" class="btn-csv">⬇ Exportar Pedidos CSV</a>
+            <a href="<?php echo htmlspecialchars(filterUrl(['export' => 'csv']), ENT_QUOTES, 'UTF-8'); ?>" class="btn-csv">⬇ Exportar Pedidos CSV</a>
             <a href="panel_concurso.php">🍕 Archivo «Armá tu pizza»</a>
             <a href="editor.php">← Editor de Carta</a>
             <a href="logout.php">Salir</a>
@@ -676,43 +824,36 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
     <div class="wrap">
         <div class="disclaimer">
             <div>
-                Los <b>pedidos</b> corresponden a la intención enviada a WhatsApp desde la carta o la web.
-                Las variaciones (<b>▲/▼</b>) comparan contra los <b><?php echo round($periodSeconds / 86400); ?> días previos</b> (<?php echo $prevSinceDt->format('d/m'); ?> al <?php echo $prevUntilDt->format('d/m'); ?>).
+                Comparativa automática contra los <b><?php echo (int)round($periodSeconds / 86400); ?> días previos</b> (<?php echo $prevSinceDt->format('d/m'); ?> al <?php echo $prevUntilDt->format('d/m'); ?>).
+                Podés anular pedidos de prueba en la tabla inferior para que no afecten la facturación ni el ticket.
             </div>
             <div>
                 <?php if ($hideBots): ?>
-                    🤖 Bots ocultos (<?php echo number_format($kpi['bots_filtrados'], 0, ',', '.'); ?> filtrados) · <a href="<?php echo htmlspecialchars(filterUrl(['bots' => '1'])); ?>" style="color:var(--azul)">Incluir bots</a>
+                    🤖 Bots ocultos (<?php echo number_format($kpi['bots_filtrados'], 0, ',', '.'); ?> filtrados) · <a href="<?php echo htmlspecialchars(filterUrl(['bots' => '1']), ENT_QUOTES, 'UTF-8'); ?>" style="color:var(--azul)">Incluir bots</a>
                 <?php else: ?>
-                    🤖 Bots incluidos · <a href="<?php echo htmlspecialchars(filterUrl(['bots' => '0'])); ?>" style="color:var(--azul)">Ocultar bots</a>
+                    🤖 Bots incluidos · <a href="<?php echo htmlspecialchars(filterUrl(['bots' => '0']), ENT_QUOTES, 'UTF-8'); ?>" style="color:var(--azul)">Ocultar bots</a>
                 <?php endif; ?>
             </div>
         </div>
 
-        <!-- Barra de filtros -->
+        <!-- Filtros -->
         <div class="filter-bar">
             <div class="filter-group">
                 <span class="lbl">Período:</span>
                 <?php
-                $presets = [
-                    'today'     => 'Hoy',
-                    'yesterday' => 'Ayer',
-                    '7'         => '7 días',
-                    '30'        => '30 días',
-                    '90'        => '90 días',
-                    '365'       => '1 año',
-                ];
+                $presets = ['today'=>'Hoy','yesterday'=>'Ayer','7'=>'7 días','30'=>'30 días','90'=>'90 días','365'=>'1 año'];
                 foreach ($presets as $k => $lbl):
                 ?>
-                    <a href="<?php echo htmlspecialchars(filterUrl(['range' => $k])); ?>"
+                    <a href="<?php echo htmlspecialchars(filterUrl(['range' => $k]), ENT_QUOTES, 'UTF-8'); ?>"
                        class="pill-btn <?php echo $rangePreset === (string)$k ? 'active' : ''; ?>"><?php echo $lbl; ?></a>
                 <?php endforeach; ?>
 
                 <form method="GET" class="custom-dates">
-                    <input type="hidden" name="channel" value="<?php echo htmlspecialchars($channel); ?>">
+                    <input type="hidden" name="channel" value="<?php echo htmlspecialchars($channel, ENT_QUOTES, 'UTF-8'); ?>">
                     <input type="hidden" name="bots" value="<?php echo $hideBots ? '0' : '1'; ?>">
-                    <input type="date" name="from" value="<?php echo htmlspecialchars($sinceDt->format('Y-m-d')); ?>" required>
+                    <input type="date" name="from" value="<?php echo htmlspecialchars($sinceDt->format('Y-m-d'), ENT_QUOTES, 'UTF-8'); ?>" required>
                     <span>a</span>
-                    <input type="date" name="to" value="<?php echo htmlspecialchars($untilDt->format('Y-m-d')); ?>" required>
+                    <input type="date" name="to" value="<?php echo htmlspecialchars($untilDt->format('Y-m-d'), ENT_QUOTES, 'UTF-8'); ?>" required>
                     <button type="submit">Filtrar</button>
                 </form>
             </div>
@@ -721,27 +862,28 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
                 <span class="lbl">Canal:</span>
                 <?php
                 $chOptions = [
-                    'pizzeria' => '🍕 Pizzería (Carta + Web)',
+                    'pizzeria' => '🍕 Pizzería (Carta + Home)',
                     'carta'    => '📱 Solo /carta',
                     'home'     => '🏠 Solo Home',
+                    'tienda'   => '🛍️ Tienda',
                 ];
                 foreach ($chOptions as $ck => $clbl):
                 ?>
-                    <a href="<?php echo htmlspecialchars(filterUrl(['channel' => $ck])); ?>"
+                    <a href="<?php echo htmlspecialchars(filterUrl(['channel' => $ck]), ENT_QUOTES, 'UTF-8'); ?>"
                        class="pill-btn ch <?php echo $channel === $ck ? 'active' : ''; ?>"><?php echo $clbl; ?></a>
                 <?php endforeach; ?>
             </div>
         </div>
 
-        <!-- KPIs con comparativa contra período anterior -->
+        <!-- KPIs -->
         <div class="kpis">
             <div class="kpi">
                 <div class="kpi-top">
                     <div class="num"><?php echo number_format($kpi['visitas'], 0, ',', '.'); ?></div>
                     <?php echo fmtDelta($kpi['visitas'], $prevKpi['visitas']); ?>
                 </div>
-                <div class="lbl">Visitas a la carta</div>
-                <div class="sub">👤 <?php echo number_format($kpi['unicos'], 0, ',', '.'); ?> visitantes únicos</div>
+                <div class="lbl">Visitas</div>
+                <div class="sub">👤 <?php echo number_format($kpi['unicos'], 0, ',', '.'); ?> únicos</div>
             </div>
 
             <div class="kpi">
@@ -749,8 +891,8 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
                     <div class="num"><?php echo number_format($kpi['pedidos'], 0, ',', '.'); ?></div>
                     <?php echo fmtDelta($kpi['pedidos'], $prevKpi['pedidos']); ?>
                 </div>
-                <div class="lbl">Pedidos (WhatsApp)</div>
-                <div class="sub">🍕 <?php echo number_format($kpi['items'], 0, ',', '.'); ?> unidades (<?php echo number_format($kpi['items_x_ped'], 1, ',', '.'); ?>/ped)</div>
+                <div class="lbl">Pedidos Activos</div>
+                <div class="sub">🍕 <?php echo number_format($kpi['items'], 0, ',', '.'); ?> unid. (<?php echo number_format($kpi['items_x_ped'], 1, ',', '.'); ?>/ped)</div>
             </div>
 
             <div class="kpi">
@@ -758,7 +900,7 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
                     <div class="num"><?php echo number_format($kpi['conversion'], 1, ',', '.'); ?>%</div>
                     <?php echo fmtDelta($kpi['conversion'], $prevKpi['conversion']); ?>
                 </div>
-                <div class="lbl">Conversión por visita</div>
+                <div class="lbl">Conversión</div>
                 <div class="sub">🎯 <?php echo number_format($kpi['conv_unicos'], 1, ',', '.'); ?>% s/ visitantes únicos</div>
             </div>
 
@@ -767,7 +909,7 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
                     <div class="num"><?php echo $money($kpi['facturacion']); ?></div>
                     <?php echo fmtDelta($kpi['facturacion'], $prevKpi['facturacion']); ?>
                 </div>
-                <div class="lbl">Total (Intención)</div>
+                <div class="lbl">Facturación</div>
                 <div class="sub">Ant.: <?php echo $money($prevKpi['facturacion']); ?></div>
             </div>
 
@@ -777,7 +919,7 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
                     <?php echo fmtDelta($kpi['ticket'], $prevKpi['ticket']); ?>
                 </div>
                 <div class="lbl">Ticket Promedio</div>
-                <div class="sub">Ant.: <?php echo $money($prevKpi['ticket']); ?></div>
+                <div class="sub">➕ <?php echo number_format($extrasAttachPct, 1, ',', '.'); ?>% llevan extras</div>
             </div>
 
             <div class="kpi">
@@ -786,21 +928,93 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
                     <?php echo fmtDelta($kpi['clientes_recurrentes'], $prevKpi['clientes_recurrentes']); ?>
                 </div>
                 <div class="lbl">Clientes Recurrentes</div>
-                <div class="sub">🔁 De <?php echo number_format($kpi['clientes_unicos'], 0, ',', '.'); ?> clientes que pidieron</div>
+                <div class="sub">🔁 De <?php echo number_format($kpi['clientes_unicos'], 0, ',', '.'); ?> clientes (por tel.)</div>
+            </div>
+
+            <div class="kpi">
+                <div class="kpi-top">
+                    <div class="num"><?php echo number_format($kpi['preorders'], 0, ',', '.'); ?></div>
+                    <?php echo fmtDelta($kpi['preorders'], $prevKpi['preorders']); ?>
+                </div>
+                <div class="lbl">Pedidos en Preventa</div>
+                <div class="sub">🌙 <?php echo $money($kpi['preorder_rev']); ?> fuera de horario</div>
             </div>
         </div>
 
-        <!-- Evolución diaria -->
         <div class="grid">
+            <!-- Embudo de Conversión -->
+            <div class="card">
+                <div class="card-head">
+                    <h2>🎯 Embudo de Conversión de Compra</h2>
+                    <span class="hint">Sesiones que avanzan en cada paso</span>
+                </div>
+                <?php
+                $baseFunnel = max(1, $funnelSteps['view']);
+                $fRows = [
+                    ['lbl' => '1. Vieron la carta',         'val' => $funnelSteps['view']],
+                    ['lbl' => '2. Agregaron un producto',   'val' => $funnelSteps['add_to_cart']],
+                    ['lbl' => '3. Abrieron «Tu Pedido»',    'val' => $funnelSteps['open_cart']],
+                    ['lbl' => '4. Pasaron a elegir horario','val' => $funnelSteps['open_pickup_slot']],
+                    ['lbl' => '5. Enviaron pedido',         'val' => $funnelSteps['order']],
+                ];
+                ?>
+                <div class="funnel-list">
+                    <?php foreach ($fRows as $fr):
+                        $pct = min(100, ($fr['val'] / $baseFunnel) * 100);
+                    ?>
+                    <div class="funnel-row">
+                        <div><b><?php echo htmlspecialchars($fr['lbl'], ENT_QUOTES, 'UTF-8'); ?></b></div>
+                        <div class="funnel-bar-bg"><div class="funnel-bar-fill" style="width:<?php echo round($pct, 1); ?>%"></div></div>
+                        <div class="funnel-pct"><?php echo number_format($fr['val'], 0, ',', '.'); ?> (<?php echo number_format($pct, 1, ',', '.'); ?>%)</div>
+                    </div>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+
+            <!-- Atribución por Origen / Campaña UTM -->
+            <div class="card">
+                <div class="card-head">
+                    <h2>📣 Ventas y Visitas por Origen / UTM</h2>
+                    <span class="hint">Cruza UTMs de Instagram/Bio/Ads + Referrer</span>
+                </div>
+                <?php if ($attrSources): ?>
+                <div style="overflow-x:auto;max-height:240px;overflow-y:auto">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Origen / Campaña</th>
+                                <th class="num">Visitas</th>
+                                <th class="num">Pedidos</th>
+                                <th class="num">Facturación</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($attrSources as $srcLbl => $st): ?>
+                            <tr>
+                                <td><b><?php echo htmlspecialchars($srcLbl, ENT_QUOTES, 'UTF-8'); ?></b></td>
+                                <td class="num"><?php echo number_format($st['vis'], 0, ',', '.'); ?></td>
+                                <td class="num"><b><?php echo number_format($st['ord'], 0, ',', '.'); ?></b></td>
+                                <td class="num"><?php echo $money($st['rev']); ?></td>
+                            </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+                <?php else: ?>
+                    <div class="empty">Sin datos en este período</div>
+                <?php endif; ?>
+            </div>
+
+            <!-- Evolución diaria -->
             <div class="card full">
                 <div class="card-head">
-                    <h2>📈 Evolución diaria de Visitas, Pedidos y Facturación</h2>
+                    <h2>📈 Evolución diaria de Visitas y Pedidos</h2>
                     <span class="hint">Del <?php echo $sinceDt->format('d/m/Y'); ?> al <?php echo $untilDt->format('d/m/Y'); ?></span>
                 </div>
                 <canvas id="chartDaily"></canvas>
             </div>
 
-            <!-- Rendimiento por día de la semana -->
+            <!-- Día de la semana -->
             <div class="card">
                 <div class="card-head">
                     <h2>📅 Pedidos y Visitas por Día de la Semana</h2>
@@ -809,7 +1023,6 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
                 <canvas id="chartDow"></canvas>
             </div>
 
-            <!-- Facturación por día de la semana -->
             <div class="card">
                 <div class="card-head">
                     <h2>💰 Facturación y Ticket por Día de la Semana</h2>
@@ -828,9 +1041,7 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
                     </thead>
                     <tbody>
                         <?php foreach ($dowLabels as $wi => $dName):
-                            $v = $dowVisits[$wi];
-                            $o = $dowOrders[$wi];
-                            $r = $dowRev[$wi];
+                            $v = $dowVisits[$wi]; $o = $dowOrders[$wi]; $r = $dowRev[$wi];
                             $cv = $v > 0 ? ($o / $v) * 100 : 0;
                             $tk = $o > 0 ? $r / $o : 0;
                         ?>
@@ -847,11 +1058,11 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
                 </table>
             </div>
 
-            <!-- Mapa de calor Día x Hora -->
+            <!-- Mapa de calor -->
             <div class="card full">
                 <div class="card-head">
-                    <h2>🔥 Mapa de Calor de Pedidos (Día × Hora en que se envía el pedido)</h2>
-                    <span class="hint">Muestra las horas pico reales en las que los clientes arman y mandan el carrito (11h a 01h)</span>
+                    <h2>🔥 Mapa de Calor de Pedidos (Día × Hora de envío)</h2>
+                    <span class="hint">Horas pico reales (11h a 01h)</span>
                 </div>
                 <div class="heatmap-wrap">
                     <?php
@@ -897,13 +1108,13 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
                 </div>
             </div>
 
-            <!-- Ranking de Productos: Unidades y Facturación -->
+            <!-- Top productos -->
             <div class="card">
                 <div class="card-head">
-                    <h2>🍕 Top Productos (por Unidades vendidas)</h2>
-                    <span class="hint"><?php if ($veganUnits > 0) echo "🌿 {$veganUnits} unid. veganas en el período"; ?></span>
+                    <h2>🍕 Top Productos (Unidades)</h2>
+                    <span class="hint"><?php if ($veganUnits > 0) echo "🌿 {$veganUnits} unid. veganas"; ?></span>
                 </div>
-                <?php if ($topProdQty): ?>
+                <?php if (!empty($topProdQty)): ?>
                     <canvas id="chartProd"></canvas>
                 <?php else: ?>
                     <div class="empty">Sin datos de productos en este rango</div>
@@ -912,10 +1123,10 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
 
             <div class="card">
                 <div class="card-head">
-                    <h2>💵 Top Productos por Facturación ($) y Categoría</h2>
+                    <h2>💵 Top Productos por Facturación ($)</h2>
                     <span class="hint">Cruzado con el catálogo actual</span>
                 </div>
-                <?php if ($topProdRev): ?>
+                <?php if (!empty($topProdRev)): ?>
                 <div style="overflow-x:auto;max-height:310px;overflow-y:auto">
                     <table class="data-table">
                         <thead>
@@ -930,8 +1141,8 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
                         <tbody>
                             <?php foreach ($topProdRev as $pName => $st): ?>
                             <tr>
-                                <td><b><?php echo htmlspecialchars($pName); ?></b></td>
-                                <td><span class="badge-cat"><?php echo htmlspecialchars($st['category']); ?></span></td>
+                                <td><b><?php echo htmlspecialchars($pName, ENT_QUOTES, 'UTF-8'); ?></b></td>
+                                <td><span class="badge-cat"><?php echo htmlspecialchars($st['category'], ENT_QUOTES, 'UTF-8'); ?></span></td>
                                 <td class="num"><?php echo number_format($st['qty'], 0, ',', '.'); ?></td>
                                 <td class="num"><?php echo number_format($st['orders'], 0, ',', '.'); ?></td>
                                 <td class="num"><b><?php echo $money($st['rev']); ?></b></td>
@@ -945,25 +1156,70 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
                 <?php endif; ?>
             </div>
 
-            <!-- Mix por Categoría y Combinaciones Frecuentes -->
+            <!-- Extras + Modalidad de Horario ("Ahora" vs Turno vs Preventa) -->
+            <div class="card">
+                <div class="card-head">
+                    <h2>➕ Rendimiento de Extras («Sumale a tu pizza»)</h2>
+                    <span class="hint"><?php echo number_format($extrasAttachPct, 1, ',', '.'); ?>% de los pedidos suman extras</span>
+                </div>
+                <?php if (!empty($extrasStats)): ?>
+                <table class="data-table">
+                    <thead>
+                        <tr><th>Extra</th><th class="num">Unidades</th><th class="num">Ingreso Incremental</th></tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($extrasStats as $exName => $exSt): ?>
+                        <tr>
+                            <td><b><?php echo htmlspecialchars($exName, ENT_QUOTES, 'UTF-8'); ?></b></td>
+                            <td class="num"><?php echo number_format($exSt['qty'], 0, ',', '.'); ?></td>
+                            <td class="num"><?php echo $money($exSt['rev']); ?></td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+                <?php else: ?>
+                    <div class="empty">Todavía no se registraron extras en este rango</div>
+                <?php endif; ?>
+            </div>
+
+            <div class="card">
+                <div class="card-head">
+                    <h2>⏱️ Preferencia de Momento («Ahora» vs. Programado)</h2>
+                    <span class="hint">Cómo eligen recibir su pedido</span>
+                </div>
+                <table class="data-table">
+                    <thead>
+                        <tr><th>Tipo de Horario</th><th class="num">Pedidos</th><th class="num">%</th></tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($timingModes as $tmLbl => $tmCnt):
+                            $pctTm = $kpi['pedidos'] > 0 ? ($tmCnt / $kpi['pedidos']) * 100 : 0;
+                        ?>
+                        <tr>
+                            <td><b><?php echo htmlspecialchars($tmLbl, ENT_QUOTES, 'UTF-8'); ?></b></td>
+                            <td class="num"><?php echo number_format($tmCnt, 0, ',', '.'); ?></td>
+                            <td class="num"><?php echo number_format($pctTm, 1, ',', '.'); ?>%</td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Categorías y Pares -->
             <div class="card">
                 <div class="card-head">
                     <h2>🗂️ Ventas por Categoría de Carta</h2>
                     <span class="hint">Participación en unidades y facturación</span>
                 </div>
-                <?php if ($catStats): ?>
+                <?php if (!empty($catStats)): ?>
                 <table class="data-table">
                     <thead>
-                        <tr>
-                            <th>Categoría</th>
-                            <th class="num">Unidades</th>
-                            <th class="num">Facturación</th>
-                        </tr>
+                        <tr><th>Categoría</th><th class="num">Unidades</th><th class="num">Facturación</th></tr>
                     </thead>
                     <tbody>
                         <?php foreach ($catStats as $cName => $cst): ?>
                         <tr>
-                            <td><b><?php echo htmlspecialchars($cName); ?></b></td>
+                            <td><b><?php echo htmlspecialchars($cName, ENT_QUOTES, 'UTF-8'); ?></b></td>
                             <td class="num"><?php echo number_format($cst['qty'], 0, ',', '.'); ?></td>
                             <td class="num"><?php echo $money($cst['rev']); ?></td>
                         </tr>
@@ -977,21 +1233,18 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
 
             <div class="card">
                 <div class="card-head">
-                    <h2>🤝 Productos que más se piden juntos (Combos reales)</h2>
+                    <h2>🤝 Pizzas que más se piden juntas</h2>
                     <span class="hint">Pares frecuentes dentro del mismo carrito</span>
                 </div>
                 <?php if (!empty($topPairs)): ?>
                 <table class="data-table">
                     <thead>
-                        <tr>
-                            <th>Combinación en el mismo pedido</th>
-                            <th class="num">Veces juntos</th>
-                        </tr>
+                        <tr><th>Combinación en el mismo pedido</th><th class="num">Veces juntos</th></tr>
                     </thead>
                     <tbody>
                         <?php foreach ($topPairs as $pairName => $cnt): ?>
                         <tr>
-                            <td><?php echo htmlspecialchars($pairName); ?></td>
+                            <td><?php echo htmlspecialchars($pairName, ENT_QUOTES, 'UTF-8'); ?></td>
                             <td class="num"><b><?php echo number_format($cnt, 0, ',', '.'); ?></b></td>
                         </tr>
                         <?php endforeach; ?>
@@ -1002,10 +1255,10 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
                 <?php endif; ?>
             </div>
 
-            <!-- Operativa: Forma de pago, Retiro vs Envío, Franjas Horarias -->
+            <!-- Pago y Entrega -->
             <div class="card">
                 <div class="card-head">
-                    <h2>💳 Forma de Pago (Pedidos y Monto $)</h2>
+                    <h2>💳 Forma de Pago</h2>
                     <span class="hint">Desglose financiero</span>
                 </div>
                 <?php if ($pagoCount): ?>
@@ -1021,7 +1274,7 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
                                     $pctRev = $kpi['facturacion'] > 0 ? ($rv / $kpi['facturacion']) * 100 : 0;
                                 ?>
                                 <tr>
-                                    <td><b><?php echo htmlspecialchars($pm); ?></b></td>
+                                    <td><b><?php echo htmlspecialchars($pm, ENT_QUOTES, 'UTF-8'); ?></b></td>
                                     <td class="num"><?php echo $c; ?></td>
                                     <td class="num"><?php echo $money($rv); ?></td>
                                     <td class="num"><?php echo number_format($pctRev, 1, ',', '.'); ?>%</td>
@@ -1053,7 +1306,7 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
                                     $tk = $c > 0 ? $rv / $c : 0;
                                 ?>
                                 <tr>
-                                    <td><b><?php echo htmlspecialchars($dtLbl); ?></b></td>
+                                    <td><b><?php echo htmlspecialchars($dtLbl, ENT_QUOTES, 'UTF-8'); ?></b></td>
                                     <td class="num"><?php echo $c; ?></td>
                                     <td class="num"><?php echo $money($rv); ?></td>
                                     <td class="num"><?php echo $money($tk); ?></td>
@@ -1069,8 +1322,8 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
 
             <div class="card full">
                 <div class="card-head">
-                    <h2>🕒 Franjas Horarias de Retiro / Entrega Elegidas</h2>
-                    <span class="hint">Horarios solicitados en el selector de turnos de la carta</span>
+                    <h2>🕒 Franjas Horarias Elegidas («⚡ Ahora» vs. Turnos de 15')</h2>
+                    <span class="hint">Horarios solicitados en el selector de la carta</span>
                 </div>
                 <?php if ($franjas): ?>
                     <canvas id="chartFranjas"></canvas>
@@ -1079,15 +1332,15 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
                 <?php endif; ?>
             </div>
 
-            <!-- Canales, Orígenes de Tráfico y Dispositivos -->
-            <div class="card third">
+            <!-- Canales y Dispositivos -->
+            <div class="card">
                 <div class="card-head">
                     <h2>🚪 Rendimiento por Canal</h2>
-                    <span class="hint">Carta vs. Home</span>
+                    <span class="hint">Carta vs. Home vs. Tienda</span>
                 </div>
                 <table class="data-table">
                     <thead>
-                        <tr><th>Canal</th><th class="num">Visitas</th><th class="num">Ped.</th><th class="num">Conv.</th></tr>
+                        <tr><th>Canal</th><th class="num">Visitas</th><th class="num">Ped.</th><th class="num">Conv.</th><th class="num">Facturación</th></tr>
                     </thead>
                     <tbody>
                         <?php
@@ -1095,47 +1348,22 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
                         foreach ($allSrcs as $sKey):
                             $sv = $channelsVis[$sKey] ?? 0;
                             $so = $channelsOrd[$sKey] ?? 0;
+                            $sr = $channelsRev[$sKey] ?? 0.0;
                             $sc = $sv > 0 ? ($so / $sv) * 100 : 0;
                         ?>
                         <tr>
-                            <td><span class="badge-src <?php echo htmlspecialchars($sKey); ?>"><?php echo htmlspecialchars($sKey); ?></span></td>
+                            <td><span class="badge-src <?php echo htmlspecialchars($sKey, ENT_QUOTES, 'UTF-8'); ?>"><?php echo htmlspecialchars($sKey, ENT_QUOTES, 'UTF-8'); ?></span></td>
                             <td class="num"><?php echo number_format($sv, 0, ',', '.'); ?></td>
                             <td class="num"><b><?php echo number_format($so, 0, ',', '.'); ?></b></td>
                             <td class="num"><?php echo number_format($sc, 1, ',', '.'); ?>%</td>
+                            <td class="num"><?php echo $money($sr); ?></td>
                         </tr>
                         <?php endforeach; ?>
                     </tbody>
                 </table>
             </div>
 
-            <div class="card third">
-                <div class="card-head">
-                    <h2>📲 Origen de las Visitas</h2>
-                    <span class="hint">Según Referrer HTTP</span>
-                </div>
-                <?php if ($referrers): ?>
-                <table class="data-table">
-                    <thead>
-                        <tr><th>Origen</th><th class="num">Visitas</th><th class="num">%</th></tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ($referrers as $rName => $rCnt):
-                            $pct = $kpi['visitas'] > 0 ? ($rCnt / $kpi['visitas']) * 100 : 0;
-                        ?>
-                        <tr>
-                            <td><b><?php echo htmlspecialchars($rName); ?></b></td>
-                            <td class="num"><?php echo number_format($rCnt, 0, ',', '.'); ?></td>
-                            <td class="num"><?php echo number_format($pct, 1, ',', '.'); ?>%</td>
-                        </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
-                <?php else: ?>
-                    <div class="empty">Sin datos</div>
-                <?php endif; ?>
-            </div>
-
-            <div class="card third">
+            <div class="card">
                 <div class="card-head">
                     <h2>📱 Dispositivos</h2>
                     <span class="hint">Según User-Agent</span>
@@ -1150,7 +1378,7 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
                             $pct = $kpi['visitas'] > 0 ? ($dCnt / $kpi['visitas']) * 100 : 0;
                         ?>
                         <tr>
-                            <td><b><?php echo htmlspecialchars($dName); ?></b></td>
+                            <td><b><?php echo htmlspecialchars($dName, ENT_QUOTES, 'UTF-8'); ?></b></td>
                             <td class="num"><?php echo number_format($dCnt, 0, ',', '.'); ?></td>
                             <td class="num"><?php echo number_format($pct, 1, ',', '.'); ?>%</td>
                         </tr>
@@ -1162,24 +1390,25 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
                 <?php endif; ?>
             </div>
 
-            <!-- Tabla en vivo de últimos pedidos -->
+            <!-- Tabla en vivo de últimos pedidos con conciliación Activo / Anulado -->
             <div class="card full">
                 <div class="card-head">
-                    <h2>🧾 Últimos Pedidos Enviados a WhatsApp (<?php echo count($recentOrders); ?> mostrados)</h2>
-                    <input type="search" id="orderSearch" class="search-input" placeholder="🔍 Buscar por pizza, pago, horario...">
+                    <h2>🧾 Últimos Pedidos (<?php echo count($recentOrders); ?> mostrados)</h2>
+                    <input type="search" id="orderSearch" class="search-input" placeholder="🔍 Buscar por código, pizza, pago, horario...">
                 </div>
                 <?php if ($recentOrders): ?>
                 <div style="overflow-x:auto">
                     <table class="data-table" id="ordersTable">
                         <thead>
                             <tr>
-                                <th>Fecha / Hora</th>
+                                <th>Fecha / Código</th>
                                 <th>Canal</th>
                                 <th>Modalidad</th>
                                 <th>Horario</th>
                                 <th>Pago</th>
                                 <th>Detalle del Pedido</th>
                                 <th class="num">Total</th>
+                                <th class="num">Estado</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -1192,19 +1421,36 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
                                     foreach ($itArr as $it) {
                                         $nm = trim((string)($it['name'] ?? ''));
                                         $qt = (int)($it['qty'] ?? 1);
-                                        if ($nm !== '') $pills[] = htmlspecialchars($nm) . ' <b>×' . $qt . '</b>';
+                                        if ($nm !== '') $pills[] = htmlspecialchars($nm, ENT_QUOTES, 'UTF-8') . ' <b>×' . $qt . '</b>';
                                     }
                                 }
                                 $dt = $ro['delivery_type'] === 'envio' ? '🛵 Envío' : ($ro['delivery_type'] === 'retiro' ? '🏪 Retiro' : '—');
+                                $isCanc = (($ro['status'] ?? 'confirmed') === 'cancelled');
                             ?>
-                            <tr>
-                                <td style="white-space:nowrap"><?php echo htmlspecialchars($fechaFmt); ?></td>
-                                <td><span class="badge-src <?php echo htmlspecialchars((string)$ro['source']); ?>"><?php echo htmlspecialchars((string)$ro['source']); ?></span></td>
+                            <tr class="<?php echo $isCanc ? 'is-cancelled' : ''; ?>" data-order-id="<?php echo (int)$ro['id']; ?>">
+                                <td style="white-space:nowrap">
+                                    <div><?php echo htmlspecialchars($fechaFmt, ENT_QUOTES, 'UTF-8'); ?></div>
+                                    <?php if (!empty($ro['order_code'])): ?>
+                                        <small style="color:var(--azul);font-weight:700;">#<?php echo htmlspecialchars((string)$ro['order_code'], ENT_QUOTES, 'UTF-8'); ?></small>
+                                    <?php endif; ?>
+                                </td>
+                                <td><span class="badge-src <?php echo htmlspecialchars((string)$ro['source'], ENT_QUOTES, 'UTF-8'); ?>"><?php echo htmlspecialchars((string)$ro['source'], ENT_QUOTES, 'UTF-8'); ?></span></td>
                                 <td style="white-space:nowrap"><?php echo $dt; ?></td>
-                                <td style="white-space:nowrap"><?php echo htmlspecialchars($ro['pickup_time'] ?: 'Inmediato'); ?></td>
-                                <td><?php echo htmlspecialchars($ro['payment_method'] ?: '—'); ?></td>
+                                <td style="white-space:nowrap">
+                                    <?php echo htmlspecialchars($ro['pickup_time'] ?: 'Ahora', ENT_QUOTES, 'UTF-8'); ?>
+                                    <?php if (!empty($ro['is_preorder'])): ?><span title="Pedido programado con local cerrado">🌙</span><?php endif; ?>
+                                </td>
+                                <td><?php echo htmlspecialchars($ro['payment_method'] ?: '—', ENT_QUOTES, 'UTF-8'); ?></td>
                                 <td><?php echo $pills ? implode(' · ', $pills) : '<span style="color:#999">(sin detalle)</span>'; ?></td>
                                 <td class="num"><b><?php echo $money($ro['total']); ?></b></td>
+                                <td class="num">
+                                    <button type="button"
+                                            class="btn-status <?php echo $isCanc ? 'cancel' : 'ok'; ?>"
+                                            onclick="toggleOrderStatus(<?php echo (int)$ro['id']; ?>, this)"
+                                            title="Clic para alternar entre Confirmado y Anulado/Prueba">
+                                        <?php echo $isCanc ? '✕ Anulado' : '✔ Activo'; ?>
+                                    </button>
+                                </td>
                             </tr>
                             <?php endforeach; ?>
                         </tbody>
@@ -1218,6 +1464,7 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
     </div>
 
 <script>
+    const PANEL_CSRF = <?php echo json_encode($_SESSION['csrf_token']); ?>;
     const RED='#CC1414', BLUE='#1A5FBF', GREEN='#25D366', OCRE='#D4B483', GOLD='#FDB740', REDF='#D73828';
     const PALETTE=[RED, BLUE, GREEN, GOLD, OCRE, REDF, '#7B5EA7', '#2F9E8F', '#E07A3F', '#5C7AEA'];
 
@@ -1232,7 +1479,7 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
     const dowOrders = <?php echo json_encode($dowOrders); ?>;
     const pago      = <?php echo json_encode($pagoCount); ?>;
     const entrega   = <?php echo json_encode($entregaCount); ?>;
-    const prodQty   = <?php echo json_encode(array_map(fn($x) => $x['qty'], $topProdQty)); ?>;
+    const prodQty   = <?php echo json_encode(array_map(fn($x) => $x['qty'], $topProdQty ?? [])); ?>;
     const franjas   = <?php echo json_encode($franjas); ?>;
 
     new Chart(document.getElementById('chartDaily'), {
@@ -1303,7 +1550,6 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
         });
     }
 
-    // Filtro en vivo para la tabla de últimos pedidos
     const searchInput = document.getElementById('orderSearch');
     if (searchInput) {
         searchInput.addEventListener('input', function() {
@@ -1312,6 +1558,27 @@ $dowLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', '
                 tr.style.display = tr.textContent.toLowerCase().includes(q) ? '' : 'none';
             });
         });
+    }
+
+    async function toggleOrderStatus(orderId, btn) {
+        btn.disabled = true;
+        const fd = new FormData();
+        fd.append('action', 'toggle_order_status');
+        fd.append('id', String(orderId));
+        fd.append('csrf_token', PANEL_CSRF);
+        try {
+            const res  = await fetch('panel.php', { method: 'POST', body: fd });
+            const data = await res.json();
+            if (data.ok) {
+                location.reload();
+            } else {
+                alert(data.error || 'No se pudo cambiar el estado');
+                btn.disabled = false;
+            }
+        } catch (e) {
+            alert('Error de conexión');
+            btn.disabled = false;
+        }
     }
 </script>
 </body>

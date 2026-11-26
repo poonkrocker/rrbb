@@ -2,11 +2,8 @@
 /**
  * _store_cart.php — Carrito de TIENDA (modal + JS), separado del de la carta.
  *
- * Compartido por tienda.php e index.php, así el comportamiento del carrito de
- * tienda es idéntico en la página propia y en la sección integrada.
- *
+ * Compartido por tienda.php e index.php.
  * Usa localStorage 'store_cart' (no se mezcla con el carrito de pizzas).
- * Checkout online vía tienda_checkout.php (Mercado Pago / modo demo).
  */
 ?>
 <!-- Botón flotante carrito de tienda -->
@@ -30,13 +27,13 @@
 
     <div class="checkout-section">
         <div class="input-group">
-            <input type="text" id="storeName" placeholder="Nombre y apellido" required>
+            <input type="text" id="storeName" placeholder="Nombre y apellido" required autocomplete="name">
         </div>
         <div class="input-group">
-            <input type="email" id="storeEmail" placeholder="Email" required>
+            <input type="email" id="storeEmail" placeholder="Email" required autocomplete="email">
         </div>
         <div class="input-group">
-            <input type="tel" id="storePhone" placeholder="Teléfono / WhatsApp" required>
+            <input type="tel" id="storePhone" placeholder="Teléfono / WhatsApp" required autocomplete="tel">
         </div>
         <div class="input-group">
             <div class="delivery-toggle">
@@ -44,14 +41,14 @@
                 <button type="button" class="delivery-btn" id="storeBtnEnvio" onclick="setStoreDelivery('envio')">🛵 Envío a domicilio</button>
             </div>
             <div id="storeAddressGroup" style="display:none">
-                <input type="text" id="storeAddress" placeholder="Dirección de entrega">
+                <input type="text" id="storeAddress" placeholder="Dirección de entrega" autocomplete="street-address">
             </div>
         </div>
     </div>
 
     <div class="cart-actions">
-        <button class="clear-cart" onclick="clearStoreCart()">Vaciar</button>
-        <button class="send-order" onclick="checkoutStore()">Pagar online</button>
+        <button type="button" class="clear-cart" onclick="clearStoreCart()">Vaciar</button>
+        <button type="button" class="send-order" onclick="checkoutStore()">Pagar online</button>
     </div>
 </div>
 
@@ -60,13 +57,16 @@
     let storeDeliveryType = 'retiro';
 
     function getStoreCart() {
-        return JSON.parse(localStorage.getItem(STORE_CART_KEY)) || [];
+        try {
+            return JSON.parse(localStorage.getItem(STORE_CART_KEY)) || [];
+        } catch (e) {
+            return [];
+        }
     }
     function setStoreCart(cart) {
         localStorage.setItem(STORE_CART_KEY, JSON.stringify(cart));
     }
 
-    // scrollToCategory puede ya existir (index/carta lo definen). Si no, lo creamos.
     if (typeof window.scrollToCategory !== 'function') {
         window.scrollToCategory = function (id, event) {
             if (event) event.preventDefault();
@@ -77,18 +77,26 @@
 
     function addStoreItem(id, name, price, image) {
         const cart = getStoreCart();
-        const existing = cart.find(i => i.id === id);
+        const existing = cart.find(i => String(i.id) === String(id));
         if (existing) {
             existing.quantity += 1;
         } else {
-            cart.push({ id, name, price, image, quantity: 1 });
+            cart.push({ id: String(id), name, price: Number(price) || 0, image, quantity: 1 });
         }
         setStoreCart(cart);
         updateStoreCartUI();
         showStoreCartButton();
+
+        if (typeof window.rrbbTrack === 'function') {
+            window.rrbbTrack('add_to_cart', {
+                id: String(id),
+                name: name,
+                price: Number(price) || 0,
+                quantity: 1
+            });
+        }
     }
 
-    // Listener delegado: lee del .pizza-item padre (robusto ante comillas en nombres)
     document.addEventListener('click', function (e) {
         const btn = e.target.closest('.store-add-btn');
         if (!btn) return;
@@ -104,11 +112,11 @@
 
     function changeStoreQty(id, delta) {
         let cart = getStoreCart();
-        const item = cart.find(i => i.id === id);
+        const item = cart.find(i => String(i.id) === String(id));
         if (!item) return;
         item.quantity += delta;
         if (item.quantity <= 0) {
-            cart = cart.filter(i => i.id !== id);
+            cart = cart.filter(i => String(i.id) !== String(id));
         }
         setStoreCart(cart);
         updateStoreCartUI();
@@ -130,21 +138,35 @@
         }
 
         cart.forEach(item => {
-            const lineTotal = item.price * item.quantity;
+            const lineTotal = (Number(item.price) || 0) * (Number(item.quantity) || 1);
             total += lineTotal;
-            itemCount += item.quantity;
+            itemCount += Number(item.quantity) || 1;
 
             const row = document.createElement('div');
             row.className = 'store-cart-item';
-            row.innerHTML = `
-                <span class="sci-name">${item.name}</span>
-                <span class="qty-controls">
-                    <button onclick="changeStoreQty('${item.id}', -1)">−</button>
-                    <span>${item.quantity}</span>
-                    <button onclick="changeStoreQty('${item.id}', 1)">+</button>
-                </span>
-                <span>$${lineTotal.toFixed(2)}</span>
-            `;
+
+            const sciName = document.createElement('span');
+            sciName.className = 'sci-name';
+            sciName.textContent = item.name;
+
+            const qtyWrap = document.createElement('span');
+            qtyWrap.className = 'qty-controls';
+            const btnMinus = document.createElement('button');
+            btnMinus.type = 'button';
+            btnMinus.textContent = '−';
+            btnMinus.onclick = () => changeStoreQty(item.id, -1);
+            const qtySpan = document.createElement('span');
+            qtySpan.textContent = String(item.quantity);
+            const btnPlus = document.createElement('button');
+            btnPlus.type = 'button';
+            btnPlus.textContent = '+';
+            btnPlus.onclick = () => changeStoreQty(item.id, 1);
+            qtyWrap.append(btnMinus, qtySpan, btnPlus);
+
+            const priceSpan = document.createElement('span');
+            priceSpan.textContent = '$' + lineTotal.toFixed(2);
+
+            row.append(sciName, qtyWrap, priceSpan);
             itemsEl.appendChild(row);
         });
 
@@ -163,12 +185,26 @@
     function toggleStoreCart() {
         const modal = document.getElementById('storeCartModal');
         const overlay = document.getElementById('storeOverlay');
+        if (!modal || !overlay) return;
         const isVisible = modal.style.display === 'block';
         modal.style.display = isVisible ? 'none' : 'block';
         overlay.style.display = isVisible ? 'none' : 'block';
         modal.classList.toggle('active', !isVisible);
         overlay.classList.toggle('active', !isVisible);
         updateStoreCartUI();
+
+        if (!isVisible && typeof window.rrbbTrack === 'function') {
+            const cart = getStoreCart();
+            if (cart.length > 0) {
+                const total = cart.reduce((s, i) => s + (Number(i.price) || 0) * (Number(i.quantity) || 1), 0);
+                const count = cart.reduce((s, i) => s + (Number(i.quantity) || 1), 0);
+                window.rrbbTrack('begin_checkout', {
+                    total: total,
+                    itemCount: count,
+                    items: cart.map(i => ({ item_id: String(i.id), item_name: i.name, price: Number(i.price) || 0, quantity: Number(i.quantity) || 1 }))
+                });
+            }
+        }
     }
 
     function closeStoreCart() {
@@ -224,6 +260,20 @@
             const data = await res.json();
 
             if (data.ok && data.checkout_url) {
+                try {
+                    sessionStorage.setItem('rrbb_pending_store_order', JSON.stringify({
+                        customer: { name, email, phone },
+                        delivery: { type: storeDeliveryType, address },
+                        items: cart.map(i => ({
+                            name: i.name,
+                            qty: i.quantity,
+                            price: i.price,
+                            item_id: String(i.id),
+                            item_name: i.name,
+                            quantity: i.quantity
+                        }))
+                    }));
+                } catch (e) {}
                 localStorage.removeItem(STORE_CART_KEY);
                 window.location.href = data.checkout_url;
             } else {
@@ -237,5 +287,15 @@
         }
     }
 
-    document.addEventListener('DOMContentLoaded', updateStoreCartUI);
+    document.addEventListener('DOMContentLoaded', function() {
+        try {
+            const sName = localStorage.getItem('rrbb_customer_name') || '';
+            const sPhone = localStorage.getItem('rrbb_customer_phone') || '';
+            const sAddr = localStorage.getItem('rrbb_customer_address') || '';
+            if (sName && document.getElementById('storeName')) document.getElementById('storeName').value = sName;
+            if (sPhone && document.getElementById('storePhone')) document.getElementById('storePhone').value = sPhone;
+            if (sAddr && document.getElementById('storeAddress')) document.getElementById('storeAddress').value = sAddr;
+        } catch (e) {}
+        updateStoreCartUI();
+    });
 </script>

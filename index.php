@@ -1,399 +1,17 @@
 <?php
 session_start();
-require_once 'db_connect.php';
-require_once '_visibility.php';
-
-// Configurar zona horaria y obtener día/hora actual
-date_default_timezone_set('America/Argentina/Cordoba');
-$current_time = date('H:i:s');
-$current_day  = date('l');
-$day_map = array(
-    'Monday'    => 'Lunes',
-    'Tuesday'   => 'Martes',
-    'Wednesday' => 'Miércoles',
-    'Thursday'  => 'Jueves',
-    'Friday'    => 'Viernes',
-    'Saturday'  => 'Sábado',
-    'Sunday'    => 'Domingo'
-);
-$current_day_es = isset($day_map[$current_day]) ? $day_map[$current_day] : 'Lunes';
-
-/**
- * Agrupa por **segmento** (cada "HH:MM - HH:MM") y además
- * **fusiona los cruces de medianoche**:
- *   ... 20:30 - 23:59:59 (Viernes) + 00:00:00 - 00:30:00 (Sábado)
- *   => muestra solo: "Viernes: 20:30 - 00:30" y oculta el residual del Sábado.
- *
- * - Convierte 23:59 / 23:59:59 -> 00:00 (cierre).
- * - Quita residuales 00:00 - 00:xx.
- * - Omite tramos vacíos (start == end).
- */
-function formatGroupedHours($rows) {
-    $order = array('Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo');
-    $dayIndex = array(
-        'Lunes'=>0,'Martes'=>1,'Miércoles'=>2,'Jueves'=>3,'Viernes'=>4,'Sábado'=>5,'Domingo'=>6
-    );
-
-    // --- 1) Cargar crudo por día (con segundos) ---
-    $rawByDay = array();
-    foreach ($order as $d) $rawByDay[$d] = array();
-
-    foreach ($rows as $r) {
-        $day = isset($r['day_of_week']) ? $r['day_of_week'] : '';
-        if (!isset($rawByDay[$day])) continue;
-
-        $s = isset($r['start_time']) ? $r['start_time'] : '';
-        $e = isset($r['end_time'])   ? $r['end_time']   : '';
-
-        $rawByDay[$day][] = array('s'=>$s, 'e'=>$e);
-    }
-
-    // --- 2) Fusionar cruce de medianoche ---
-    for ($i = 0; $i < 7; $i++) {
-        $d = $order[$i];
-        $next = $order[($i + 1) % 7];
-
-        if (!empty($rawByDay[$d]) && !empty($rawByDay[$next])) {
-            // último tramo del día d
-            $lastIdx = count($rawByDay[$d]) - 1;
-            $last = $rawByDay[$d][$lastIdx];
-
-            // primer tramo del día siguiente
-            $firstNext = $rawByDay[$next][0];
-
-            $endsAt2359 = preg_match('/^23:59(?::\d{2})?$/', $last['e']);
-            $startsAt0000 = preg_match('/^00:00(?::\d{2})?$/', $firstNext['s']);
-
-            if ($endsAt2359 && $startsAt0000) {
-                // Extiende el final del día actual al final del primer tramo del siguiente
-                $rawByDay[$d][$lastIdx]['e'] = $firstNext['e'];
-                // Marca el primer tramo del siguiente día para omitirlo (residual)
-                $rawByDay[$next][0]['_skip'] = true;
-            }
-        }
-    }
-
-    // --- 3) Convertir a segmentos por día (HH:MM), omitiendo residuales/skip ---
-    $segmentsByDay = array();
-    foreach ($order as $d) $segmentsByDay[$d] = array();
-
-    foreach ($order as $d) {
-        foreach ($rawByDay[$d] as $seg) {
-            if (!empty($seg['_skip'])) continue;
-
-            $start = date('H:i', strtotime($seg['s']));
-            $endRaw = $seg['e'];
-            $end = date('H:i', strtotime($endRaw));
-
-            // 23:59 / 23:59:59 -> 00:00 (cierre)
-            if ($end === '23:59' || preg_match('/23:59:59$/', (string)$endRaw)) {
-                $end = '00:00';
-            }
-
-            // residuales 00:00 - 00:xx (resto de la noche anterior) => omitir
-            if ($start === '00:00' && preg_match('/^00:\d{2}$/', $end)) continue;
-
-            // tramos vacíos
-            if ($start === $end) continue;
-
-            $segmentsByDay[$d][] = $start . ' - ' . $end;
-        }
-    }
-
-    // --- 4) Conjunto de segmentos únicos ---
-    $unique = array();
-    foreach ($order as $d) {
-        foreach ($segmentsByDay[$d] as $seg) {
-            $unique[$seg] = true;
-        }
-    }
-    $uniqueSegments = array_keys($unique);
-    if (empty($uniqueSegments)) {
-        return 'Horarios no configurados, contacta al administrador.';
-    }
-
-    // --- 5) Para cada segmento, agrupar días consecutivos donde aparece ---
-    $lines = array();
-    foreach ($uniqueSegments as $seg) {
-        $daysWithSeg = array();
-        foreach ($order as $d) {
-            if (in_array($seg, $segmentsByDay[$d], true)) {
-                $daysWithSeg[] = $dayIndex[$d];
-            }
-        }
-        if (empty($daysWithSeg)) continue;
-        sort($daysWithSeg);
-
-        $k = 0; $m = count($daysWithSeg);
-        while ($k < $m) {
-            $startIdx = $daysWithSeg[$k];
-            $endIdx = $startIdx;
-            while ($k+1 < $m && $daysWithSeg[$k+1] === $endIdx + 1) {
-                $k++;
-                $endIdx = $daysWithSeg[$k];
-            }
-
-            $startDay = $order[$startIdx];
-            $endDay   = $order[$endIdx];
-            $rango = ($startIdx === $endIdx) ? $startDay : "De $startDay a $endDay";
-
-            $lines[] = array(
-                'key' => $seg,
-                'startIdx' => $startIdx,
-                'label' => $rango . ': ' . $seg
-            );
-
-            $k++;
-        }
-    }
-
-    // --- 6) Ordenar líneas por hora de inicio (almuerzo antes que noche) ---
-    usort($lines, function($a, $b){
-        list($sa,) = array_map('trim', explode('-', $a['key'], 2));
-        list($sb,) = array_map('trim', explode('-', $b['key'], 2));
-        list($ah, $am) = array_map('intval', explode(':', $sa));
-        list($bh, $bm) = array_map('intval', explode(':', $sb));
-        $ma = $ah*60 + $am;
-        $mb = $bh*60 + $bm;
-        if ($ma === $mb) {
-            return $a['startIdx'] <=> $b['startIdx'];
-        }
-        return $ma <=> $mb;
-    });
-
-    // --- 7) Salida ---
-    $out = array();
-    foreach ($lines as $ln) $out[] = $ln['label'];
-    return implode('<br>', $out);
-}
-
-/**
- * Convierte las filas de business_hours a un array de OpeningHoursSpecification
- * (Schema.org / JSON-LD) aplicando la misma lógica de fusión de medianoche
- * que formatGroupedHours().
- *
- * Devuelve un array como:
- * [
- *   ['@type'=>'OpeningHoursSpecification','dayOfWeek'=>['Monday',...],'opens'=>'12:00','closes'=>'15:00'],
- *   ...
- * ]
- */
-function buildOpeningHoursSchema($rows) {
-    $order = array('Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo');
-    $dayToEn = array(
-        'Lunes'     => 'Monday',
-        'Martes'    => 'Tuesday',
-        'Miércoles' => 'Wednesday',
-        'Jueves'    => 'Thursday',
-        'Viernes'   => 'Friday',
-        'Sábado'    => 'Saturday',
-        'Domingo'   => 'Sunday'
-    );
-
-    // --- Cargar crudo por día ---
-    $rawByDay = array();
-    foreach ($order as $d) $rawByDay[$d] = array();
-    foreach ($rows as $r) {
-        $day = isset($r['day_of_week']) ? $r['day_of_week'] : '';
-        if (!isset($rawByDay[$day])) continue;
-        $rawByDay[$day][] = array(
-            's' => isset($r['start_time']) ? $r['start_time'] : '',
-            'e' => isset($r['end_time'])   ? $r['end_time']   : ''
-        );
-    }
-
-    // --- Fusionar cruce de medianoche ---
-    for ($i = 0; $i < 7; $i++) {
-        $d = $order[$i];
-        $next = $order[($i + 1) % 7];
-        if (!empty($rawByDay[$d]) && !empty($rawByDay[$next])) {
-            $lastIdx = count($rawByDay[$d]) - 1;
-            $last = $rawByDay[$d][$lastIdx];
-            $firstNext = $rawByDay[$next][0];
-            $endsAt2359   = preg_match('/^23:59(?::\d{2})?$/', $last['e']);
-            $startsAt0000 = preg_match('/^00:00(?::\d{2})?$/', $firstNext['s']);
-            if ($endsAt2359 && $startsAt0000) {
-                $rawByDay[$d][$lastIdx]['e'] = $firstNext['e'];
-                $rawByDay[$next][0]['_skip'] = true;
-            }
-        }
-    }
-
-    // --- Construir segmentos por día (HH:MM) ---
-    $segmentsByDay = array();
-    foreach ($order as $d) $segmentsByDay[$d] = array();
-    foreach ($order as $d) {
-        foreach ($rawByDay[$d] as $seg) {
-            if (!empty($seg['_skip'])) continue;
-            $start  = date('H:i', strtotime($seg['s']));
-            $endRaw = $seg['e'];
-            $end    = date('H:i', strtotime($endRaw));
-            if ($end === '23:59' || preg_match('/23:59:59$/', (string)$endRaw)) {
-                $end = '00:00';
-            }
-            if ($start === '00:00' && preg_match('/^00:\d{2}$/', $end)) continue;
-            if ($start === $end) continue;
-            $segmentsByDay[$d][] = $start . '|' . $end;
-        }
-    }
-
-    // --- Agrupar días por segmento (mismo opens/closes => mismo bloque) ---
-    $segmentDays = array();
-    foreach ($order as $d) {
-        foreach ($segmentsByDay[$d] as $seg) {
-            if (!isset($segmentDays[$seg])) $segmentDays[$seg] = array();
-            $segmentDays[$seg][] = $dayToEn[$d];
-        }
-    }
-
-    $result = array();
-    foreach ($segmentDays as $seg => $days) {
-        list($opens, $closes) = explode('|', $seg);
-        $result[] = array(
-            '@type'     => 'OpeningHoursSpecification',
-            'dayOfWeek' => array_values(array_unique($days)),
-            'opens'     => $opens,
-            'closes'    => $closes
-        );
-    }
-    return $result;
-}
-
-// (La función isItemVisibleNow vive ahora en _visibility.php, incluida arriba.)
-
-// Verificar si el negocio está abierto y obtener horarios
-$is_open = false;
-$closed_message = "Estamos cerrados ahora. Horarios de atención:<br>";
-$all_hours = array();
-
-try {
-    // Horarios del día actual (para saber si está abierto)
-    $stmt = $pdo->prepare("SELECT start_time, end_time FROM business_hours WHERE day_of_week = ?");
-    $stmt->execute([$current_day_es]);
-    $hours = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-    // Todos los horarios (para mostrar en el aviso y armar el schema)
-    $all_hours_stmt = $pdo->query("
-        SELECT day_of_week, start_time, end_time
-        FROM business_hours
-        ORDER BY FIELD(day_of_week,'Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'),
-                 start_time, end_time
-    ");
-    $all_hours = $all_hours_stmt->fetchAll(PDO::FETCH_ASSOC);
-
-    if (count($all_hours) === 0) {
-        $closed_message = "Estamos cerrados ahora. Horarios no configurados, contacta al administrador.";
-    } else {
-        // mensaje agrupado por segmento + fusión de medianoche
-        $closed_message = "Estamos cerrados ahora. Horarios de atención:<br>" . formatGroupedHours($all_hours);
-    }
-
-    // ¿Está abierto ahora?
-    foreach ($hours as $hour) {
-        if ($current_time >= $hour['start_time'] && $current_time <= $hour['end_time']) {
-            $is_open = true;
-            break;
-        }
-    }
-} catch (PDOException $e) {
-    error_log("Error en consulta de horarios: " . $e->getMessage());
-    $closed_message = "Estamos cerrados ahora. Error al verificar horarios, contacta al administrador.";
-}
-
-
-// Fetch categories
-try {
-    $categories_stmt = $pdo->query("SELECT * FROM categories ORDER BY display_order");
-    $categories = $categories_stmt->fetchAll();
-} catch (PDOException $e) {
-    $categories = [];
-}
-
-// Pre-fetch de ítems por categoría aplicando filtros de día/hora.
-// Se usa la MISMA fuente para el submenú y para la sección, así una
-// categoría sin ítems disponibles ahora (ej. "Promos" fuera de ventana)
-// se oculta consistentemente en ambos lugares.
-$items_by_category = [];
-try {
-    $items_stmt = $pdo->prepare("
-        SELECT mi.*
-        FROM menu_items mi
-        WHERE mi.category_id = ?
-          AND mi.is_visible = 1
-        ORDER BY mi.display_order
-    ");
-    foreach ($categories as $category) {
-        $items_stmt->execute([$category['id']]);
-        $all_items = $items_stmt->fetchAll(PDO::FETCH_ASSOC);
-        $items_by_category[$category['id']] = array_values(array_filter(
-            $all_items,
-            fn($it) => isItemVisibleNow($it, $current_day_es, $current_time)
-        ));
-    }
-} catch (PDOException $e) {
-    error_log("Error pre-fetching items por categoría: " . $e->getMessage());
-    $items_by_category = [];
-}
-
-
-
-// Fetch sub-products
-$sub_products = [];
-try {
-    $stmt = $pdo->query("
-        SELECT ms.parent_item_id, mi.id, mi.name, ms.quantity, ms.is_required
-        FROM menu_item_subproducts ms
-        JOIN menu_items mi ON ms.sub_item_id = mi.id
-    ");
-    $sub_results = $stmt->fetchAll();
-    foreach ($sub_results as $sub) {
-        $sub_products[$sub['parent_item_id']][] = [
-            'id' => $sub['id'],
-            'name' => $sub['name'],
-            'quantity' => $sub['quantity'],
-            'is_required' => $sub['is_required']
-        ];
-    }
-} catch (PDOException $e) {
-    $sub_products = [];
-}
-
-// Variantes con precio propio (Muzza / Fugazzeta / Arrabbiata, etc.)
-require_once '_variants_data.php';
-
-// Fetch eligible items (visible pizzas)
-$eligible_items = [];
-try {
-    $stmt = $pdo->prepare("
-        SELECT mi.id, mi.name, mi.price, mi.visible_days, mi.visible_start_time, mi.visible_end_time
-        FROM menu_items mi
-        WHERE mi.is_visible = 1
-        AND mi.category_id = (SELECT id FROM categories WHERE name = 'Pizzas' LIMIT 1)
-        ORDER BY mi.name
-    ");
-    $stmt->execute();
-    $all_eligible = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    $eligible_items = array_values(array_filter(
-        $all_eligible,
-        fn($it) => isItemVisibleNow($it, $current_day_es, $current_time)
-    ));
-} catch (PDOException $e) {
-    $eligible_items = [];
-}
+require_once __DIR__ . '/db_connect.php';
+require_once __DIR__ . '/_carta_data.php';
 
 // ===========================================================
 // Construcción del Schema.org (JSON-LD) - DINÁMICO
 // ===========================================================
-
-// 1) Horarios de apertura desde la BD
 $opening_hours_schema = buildOpeningHoursSchema($all_hours);
 
-// 2) Carta para el schema: todas las categorías visibles, excluyendo "Carta Secreta"
-//    y los ítems marcados como is_secret_menu (no se exponen en SEO).
 $schema_menu_sections = [];
 try {
     foreach ($categories as $category) {
-        if (strcasecmp($category['name'], 'Carta Secreta') === 0) continue;
+        if (!empty($secret_category_ids[(int)$category['id']])) continue;
 
         $stmt = $pdo->prepare("
             SELECT mi.*
@@ -426,10 +44,9 @@ try {
                     '@type'         => 'Offer',
                     'price'         => number_format((float)$mi['price'], 2, '.', ''),
                     'priceCurrency' => 'ARS',
-                    'availability'  => 'https://schema.org/InStock'
+                    'availability'  => 'https://schema.org/InStock',
                 ];
             }
-            // Opción vegana como sufijo informativo en suitableForDiet
             if (!empty($mi['has_vegan_option'])) {
                 $item_schema['suitableForDiet'] = 'https://schema.org/VeganDiet';
             }
@@ -439,7 +56,7 @@ try {
         $schema_menu_sections[] = [
             '@type'       => 'MenuSection',
             'name'        => (string)$category['name'],
-            'hasMenuItem' => $menu_items_schema
+            'hasMenuItem' => $menu_items_schema,
         ];
     }
 } catch (PDOException $e) {
@@ -447,90 +64,78 @@ try {
     $schema_menu_sections = [];
 }
 
-// 3) Schema completo
 $restaurant_schema = [
-    '@context'           => 'https://schema.org',
-    '@type'              => 'Restaurant',
-    '@id'                => 'https://arrabbiata.com.ar/#restaurant',
-    'name'               => 'Arrabbiata',
-    'alternateName'      => 'Pizzería Arrabbiata',
-    'description'        => 'Pizzería Arrabbiata, la mejor pizza de Alberdi. Auténticas pizzas estilo napolitano con ingredientes de la provincia, en el corazón del barrio Alberdi, Córdoba Capital.',
-    'url'                => 'https://arrabbiata.com.ar',
-    'logo'               => 'https://arrabbiata.com.ar/Uploads/logolindo.png',
-    'image'              => [
+    '@context'            => 'https://schema.org',
+    '@type'               => 'Restaurant',
+    '@id'                 => 'https://arrabbiata.com.ar/#restaurant',
+    'name'                => 'Arrabbiata',
+    'alternateName'       => 'Pizzería Arrabbiata',
+    'description'         => 'Pizzería Arrabbiata, la mejor pizza de Alberdi. Auténticas pizzas estilo napolitano con ingredientes de la provincia, en el corazón del barrio Alberdi, Córdoba Capital.',
+    'url'                 => 'https://arrabbiata.com.ar',
+    'logo'                => 'https://arrabbiata.com.ar/Uploads/logolindo.png',
+    'image'               => [
         'https://arrabbiata.com.ar/wp-content/uploads/2025/05/Identidad-Arrabbiata-19_page-0001-1-scaled-e1746087327655.png',
         'https://arrabbiata.com.ar/Uploads/Img001.webp',
         'https://arrabbiata.com.ar/Uploads/Img002.webp',
         'https://arrabbiata.com.ar/Uploads/Img003.webp',
         'https://arrabbiata.com.ar/Uploads/Img004.webp',
-        'https://arrabbiata.com.ar/Uploads/Img005.webp'
+        'https://arrabbiata.com.ar/Uploads/Img005.webp',
     ],
-    'telephone'          => '+5493517548030',
-    'email'              => 'prontoarrabbiata@gmail.com',
-    'priceRange'         => '$$',
-    'servesCuisine'      => ['Italiana', 'Pizza Napolitana'],
-    'acceptsReservations'=> 'False',
-    'paymentAccepted'    => 'Efectivo, Transferencia, Tarjeta de Débito, Tarjeta de Crédito',
-    'currenciesAccepted' => 'ARS',
-    'address' => [
+    'telephone'           => '+5493517548030',
+    'email'               => 'prontoarrabbiata@gmail.com',
+    'priceRange'          => '$$',
+    'servesCuisine'       => ['Italiana', 'Pizza Napolitana'],
+    'acceptsReservations' => 'False',
+    'paymentAccepted'     => 'Efectivo, Transferencia, Tarjeta de Débito, Tarjeta de Crédito',
+    'currenciesAccepted'  => 'ARS',
+    'address'             => [
         '@type'           => 'PostalAddress',
         'streetAddress'   => '27 de abril 798',
         'addressLocality' => 'Córdoba',
         'addressRegion'   => 'Córdoba',
         'postalCode'      => 'X5000',
-        'addressCountry'  => 'AR'
+        'addressCountry'  => 'AR',
     ],
-    'geo' => [
-        '@type'    => 'GeoCoordinates',
-        'latitude' => -31.415915,
-        'longitude'=> -64.188624
+    'geo'                 => [
+        '@type'     => 'GeoCoordinates',
+        'latitude'  => -31.415915,
+        'longitude' => -64.188624,
     ],
-    'hasMap'             => 'https://maps.app.goo.gl/8QyHubKUr5CT2bC68',
+    'hasMap'              => 'https://maps.app.goo.gl/8QyHubKUr5CT2bC68',
     'openingHoursSpecification' => $opening_hours_schema,
-    'sameAs' => [
+    'sameAs'              => [
         'https://www.instagram.com/arrabbiata.pizza',
-        'https://maps.app.goo.gl/8QyHubKUr5CT2bC68'
-    ]
+        'https://maps.app.goo.gl/8QyHubKUr5CT2bC68',
+    ],
 ];
 
-// Solo agregar hasMenu si hay secciones reales
 if (!empty($schema_menu_sections)) {
     $restaurant_schema['hasMenu'] = [
         '@type'          => 'Menu',
         'name'           => 'Carta Arrabbiata',
         'inLanguage'     => 'es-AR',
-        'hasMenuSection' => $schema_menu_sections
+        'hasMenuSection' => $schema_menu_sections,
     ];
 }
 
-// 4) WebSite schema (complementario, ayuda a Google a mostrar nombre del sitio)
 $website_schema = [
-    '@context' => 'https://schema.org',
-    '@type'    => 'WebSite',
-    '@id'      => 'https://arrabbiata.com.ar/#website',
-    'name'     => 'Arrabbiata',
-    'url'      => 'https://arrabbiata.com.ar',
+    '@context'   => 'https://schema.org',
+    '@type'      => 'WebSite',
+    '@id'        => 'https://arrabbiata.com.ar/#website',
+    'name'       => 'Arrabbiata',
+    'url'        => 'https://arrabbiata.com.ar',
     'inLanguage' => 'es-AR',
-    'publisher'  => ['@id' => 'https://arrabbiata.com.ar/#restaurant']
+    'publisher'  => ['@id' => 'https://arrabbiata.com.ar/#restaurant'],
 ];
 
 $json_flags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT;
 
 // ---- Datos de la TIENDA (compartido con tienda.php) ----
-require '_store_data.php';
+require __DIR__ . '/_store_data.php';
 
-// ---- Datos de transferencia (editables desde el editor → site_settings) ----
-$transfer_alias  = 'RRBBPIZZA';
-$transfer_holder = 'Ezequiel Urquidi';
-try {
-    $ts = $pdo->query("SELECT setting_key, setting_value FROM site_settings WHERE setting_key IN ('transfer_alias','transfer_holder')");
-    foreach ($ts->fetchAll(PDO::FETCH_ASSOC) as $row) {
-        if ($row['setting_key'] === 'transfer_alias'  && $row['setting_value'] !== '') $transfer_alias  = $row['setting_value'];
-        if ($row['setting_key'] === 'transfer_holder' && $row['setting_value'] !== '') $transfer_holder = $row['setting_value'];
-    }
-} catch (Throwable $e) { /* tabla inexistente → valores por defecto */ }
+$analytics_source = 'home';
+$track_endpoint   = 'carta/track.php';
 ?>
-
 <!DOCTYPE html>
 <html lang="es">
 <head>
@@ -539,13 +144,7 @@ try {
     <title>Arrabbiata - la mejor Pizza de Alberdi - Córdoba, Argentina</title>
     <meta name="description" content="Pizzería Arrabbiata, la mejor pizza de Alberdi. Estilo napolitano con ingredientes locales, en 27 de abril 798, barrio Alberdi, Córdoba Capital. Pedí por WhatsApp.">
     <link rel="canonical" href="https://arrabbiata.com.ar/">
-    <!-- Google Tag Manager -->
-<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
-new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
-j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
-'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
-})(window,document,'script','dataLayer','GTM-5JWLLKC7');</script>
-<!-- End Google Tag Manager -->
+<?php require __DIR__ . '/_analytics.php'; ?>
     <!-- Open Graph -->
     <meta property="og:type" content="restaurant.restaurant">
     <meta property="og:locale" content="es_AR">
@@ -563,22 +162,6 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
     <link rel="stylesheet" href="arrabbiata.css">
     <link rel="icon" type="image/png" href="/favicon.png"/>
     <link href="https://fonts.googleapis.com/css2?family=Comic+Neue:wght@400;700&display=swap" rel="stylesheet">
-    <!-- Meta Pixel Code -->
-    <script>
-    !function(f,b,e,v,n,t,s)
-    {if(f.fbq)return;n=f.fbq=function(){n.callMethod?
-    n.callMethod.apply(n,arguments):n.queue.push(arguments)};
-    if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';
-    n.queue=[];t=b.createElement(e);t.async=!0;
-    t.src=v;s=b.getElementsByTagName(e)[0];
-    s.parentNode.insertBefore(t,s)}(window, document,'script',
-    'https://connect.facebook.net/en_US/fbevents.js');
-    fbq('init', '313442609878673');
-    fbq('track', 'PageView');
-    </script>
-    <noscript><img height="1" width="1" style="display:none"
-    src="https://www.facebook.com/tr?id=313442609878673&ev=PageView&noscript=1"
-    /></noscript>
 
     <!-- Schema JSON-LD: Restaurant (dinámico desde BD) -->
     <script type="application/ld+json">
@@ -589,22 +172,11 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
 <?php echo json_encode($website_schema, $json_flags); ?>
     </script>
 
-    <style>
-/* ---- Estilos exclusivos del index, no cubiertos por arrabbiata.css ---- */
-
-/* Cursor por defecto en precio simple (no burrata) */
-.pizza-item .item-price { cursor: default; }
-
-</style>
-<?php include '_store_styles.php'; ?>
+    <?php include __DIR__ . '/_store_styles.php'; ?>
 </head>
 <body>
-    <!-- Google Tag Manager (noscript) -->
-<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-5JWLLKC7"
-height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
-<!-- End Google Tag Manager (noscript) -->
+<?php renderAnalyticsBodyNoscript(); ?>
 <div class="container">
-
     <div class="main-container">
         <!-- Navigation -->
         <nav class="nav-menu">
@@ -639,82 +211,40 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
                 <div class="gallery-slide" style="background-image: url('https://arrabbiata.com.ar/Uploads/Img005.webp');"></div>
                 <div class="gallery-slide" style="background-image: url('https://arrabbiata.com.ar/Uploads/Img003.webp');"></div>
                 <div class="gallery-slide" style="background-image: url('https://arrabbiata.com.ar/Uploads/Img002.webp');"></div>
-
-
-            <div class="gallery-slide" style="background-image: url('https://arrabbiata.com.ar/Uploads/Img001.webp');"></div>
+                <div class="gallery-slide" style="background-image: url('https://arrabbiata.com.ar/Uploads/Img001.webp');"></div>
                 <div class="gallery-slide" style="background-image: url('https://arrabbiata.com.ar/Uploads/Img004.webp');"></div>
-
-</div>
+            </div>
 
             <div class="nosotros-text">
                 <h2>Que hacemos?</h2>
-                <p>Hacemos pizzas estilo napolitano en un sentido muy amplio del término. Nuestros castigadisimos hornitos eléctricos tuneados nos permiten hacer un estilo propio de inspiración napolitana pero de pizzas auténticas y originales. Somos obsesivos en la búsqueda de los mejores ingredientes y tratamos siempre de usar materias primas locales de la provincia de Córdoba, porque realmente creemos que es importante darle valor a las maravillas que crecen en nuestra tierra. Cada semana proponemos una nueva pizza y estamos constantemente en la búsqueda de mejorar nuestra propuesta con una profunda atención al detalle.<br /> <br /></p>
+                <p>Hacemos pizzas estilo napolitano en un sentido muy amplio del término. Nuestros castigadisimos hornitos eléctricos tuneados nos permiten hacer un estilo propio de inspiración napolitana pero de pizzas auténticas y originales. Somos obsesivos en la búsqueda de los mejores ingredientes y tratamos siempre de usar materias primas locales de la provincia de Córdoba, porque realmente creemos que es importante darle valor a las maravillas que crecen en nuestra tierra. Cada semana proponemos una nueva pizza y estamos constantemente en la búsqueda de mejorar nuestra propuesta con una profunda atención al detalle.<br /><br /></p>
             </div>
         </section>
 
-        <!-- Menu Section -->
+        <!-- Menu Section (100% unificada con /carta) -->
         <section id="carta" class="section">
-        <div class="menu-container">
-            <?php if (!$is_open): ?>
-                <div class="closed-notice active"><?php echo $closed_message; ?></div>
-            <?php endif; ?>
-            <h2>Nuestra Carta</h2>
+            <?php
+            $carta_show_brand_header = false;
+            include __DIR__ . '/_carta_menu.php';
+            ?>
+        </section>
 
-            <nav class="category-submenu">
-                <ul>
-                    <?php foreach ($categories as $category): ?>
-                        <?php
-                        // Mismo origen que la sección: si no hay ítems disponibles ahora, no se muestra el link
-                        $item_count = isset($items_by_category[$category['id']]) ? count($items_by_category[$category['id']]) : 0;
-                        if ($item_count > 0):
-                        ?>
-                            <li class="<?php if ($category['name'] == 'Carta Secreta') echo 'secret-link'; ?>">
-                                <a href="#category-<?php echo $category['id']; ?>"
-                                   onclick="scrollToCategory('category-<?php echo $category['id']; ?>', event)"
-                                   aria-label="Navegar a la categoría <?php echo htmlspecialchars($category['name']); ?>">
-                                   <?php echo htmlspecialchars($category['name']); ?>
-                                </a>
-                            </li>
-                        <?php endif; ?>
-                    <?php endforeach; ?>
-                </ul>
-            </nav>
-
-            <?php foreach ($categories as $category): ?>
-                <?php
-                // Reutilizamos el array pre-calculado: misma fuente que el submenú,
-                // así una categoría sin ítems disponibles ahora se oculta acá también.
-                $items = isset($items_by_category[$category['id']]) ? $items_by_category[$category['id']] : [];
-                if (count($items) > 0):
-                ?>
-                    <div id="category-<?php echo $category['id']; ?>" class="category-section <?php if ($category['name'] == 'Carta Secreta') echo 'secret-category'; ?>">
-                        <h3 class="menu-category"><?php echo htmlspecialchars($category['name']); ?></h3>
-                        <div class="pizza-list">
-                            <?php foreach ($items as $item): ?>
-                                <?php include '_item_card.php'; ?>
-                            <?php endforeach; ?>
-                        </div>
-                    </div>
-                <?php endif; ?>
-            <?php endforeach; ?>
-        </div>
-    </section>
-
-        <!-- Tienda Section (integrada, comparte partials con tienda.php) -->
+        <!-- Tienda Section -->
         <?php if (!empty($store_categories)): ?>
         <section id="tienda" class="section">
             <div class="menu-container">
-                <?php include '_store_section.php'; ?>
+                <?php include __DIR__ . '/_store_section.php'; ?>
             </div>
         </section>
         <?php endif; ?>
 
-        <!-- Floating Cart -->
-        <?php include 'cart_modal.php'; ?>
+        <!-- Modales compartidos de Carta y Variantes -->
+        <?php include __DIR__ . '/cart_modal.php'; ?>
+        <?php include __DIR__ . '/_variant_modal.php'; ?>
 
         <!-- Floating Store Cart -->
         <?php if (!empty($store_categories)): ?>
-            <?php include '_store_cart.php'; ?>
+            <?php include __DIR__ . '/_store_cart.php'; ?>
         <?php endif; ?>
 
         <!-- Location Section -->
@@ -730,12 +260,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
                 <h3>Horarios</h3>
                 <?php
                 if (!empty($all_hours)) {
-                    // Mismo origen que el aviso de cerrado: formatGroupedHours($all_hours)
                     $horarios_formateados = formatGroupedHours($all_hours);
                     foreach (explode('<br>', $horarios_formateados) as $linea) {
                         $linea = trim($linea);
                         if ($linea !== '') {
-                            echo '<p>' . $linea . '</p>';
+                            echo '<p>' . htmlspecialchars($linea, ENT_QUOTES, 'UTF-8') . '</p>';
                         }
                     }
                 } else {
@@ -744,618 +273,74 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
                 ?>
 
                 <h3>Contacto</h3>
-                <a href="https://www.instagram.com/arrabbiata.pizza" target="_blank">@arrabbiata.pizza</a>
+                <a href="https://www.instagram.com/arrabbiata.pizza" target="_blank" rel="noopener">@arrabbiata.pizza</a>
                 <a href="mailto:prontoarrabbiata@gmail.com">prontoarrabbiata@gmail.com</a>
                 <br><br>
             </div>
         </section>
-
     </div>
-    <!-- Footer -->
+
     <footer>
         <div class="footer-content">
             <p>Arrabbiata - La mejor pizza de Alberdi, Córdoba</p>
             <div class="footer-social-icons">
-                <a href="https://www.instagram.com/arrabbiata.pizza" target="_blank">
+                <a href="https://www.instagram.com/arrabbiata.pizza" target="_blank" rel="noopener">
                     <img src="https://arrabbiata.com.ar/ig50.png" alt="Instagram">
                 </a>
-                <a href="https://maps.app.goo.gl/8QyHubKUr5CT2bC68" target="_blank">
+                <a href="https://maps.app.goo.gl/8QyHubKUr5CT2bC68" target="_blank" rel="noopener">
                     <img src="https://arrabbiata.com.ar/gmaps50.png" alt="Google Maps">
                 </a>
-                <a href="https://wa.me/5493517548030?text=Hola%20Arrabbiata%2C%20me%20comunico%20desde%20su%20web%20para%20" target="_blank">
+                <a href="https://wa.me/5493517548030?text=Hola%20Arrabbiata%2C%20me%20comunico%20desde%20su%20web%20para%20" target="_blank" rel="noopener">
                     <img src="https://arrabbiata.com.ar/wp50.png" alt="Whatsapp">
                 </a>
             </div>
         </div>
     </footer>
-
-    <script>
-        const isOpen = <?php echo json_encode($is_open); ?>;
-
-        // Datos de transferencia (editables desde el editor)
-        const TRANSFER_ALIAS  = <?php echo json_encode($transfer_alias); ?>;
-        const TRANSFER_HOLDER = <?php echo json_encode($transfer_holder); ?>;
-
-        // Métricas de uso (beacon liviano; reutiliza el endpoint de la carta)
-        function trackEvent(payload) {
-            try {
-                const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
-                if (navigator.sendBeacon) {
-                    navigator.sendBeacon('carta/track.php', blob);
-                } else {
-                    fetch('carta/track.php', { method: 'POST', body: blob, keepalive: true }).catch(() => {});
-                }
-            } catch (e) { /* tracking no crítico */ }
-        }
-
-        // Initialize page
-        document.addEventListener('DOMContentLoaded', function() {
-            console.log('Page loaded');
-            trackEvent({ type: 'view', source: 'home', path: location.pathname, ref: document.referrer });
-            // Gallery rotation
-            const slides = document.querySelectorAll('.gallery-slide');
-            let currentSlide = 0;
-
-            function showSlide(n) {
-                slides.forEach(slide => slide.classList.remove('active'));
-                slides[n].classList.add('active');
-            }
-
-            function nextSlide() {
-                currentSlide = (currentSlide + 1) % slides.length;
-                showSlide(currentSlide);
-            }
-
-            showSlide(0);
-            setInterval(nextSlide, 5000);
-
-            // Smooth scroll
-            document.querySelectorAll('a[href^="#"]').forEach(anchor => {
-                anchor.addEventListener('click', function(e) {
-                    e.preventDefault();
-                    document.querySelector(this.getAttribute('href')).scrollIntoView({
-                        behavior: 'smooth'
-                    });
-                });
-            });
-
-            // Section visibility
-            const sections = document.querySelectorAll('.section');
-            function checkScroll() {
-                sections.forEach(section => {
-                    const sectionTop = section.getBoundingClientRect().top;
-                    const sectionHeight = section.offsetHeight;
-                    if (sectionTop < window.innerHeight * 0.7 && sectionTop > -sectionHeight * 0.7) {
-                        section.classList.add('active');
-                    } else {
-                        section.classList.remove('active');
-                    }
-                });
-            }
-
-            window.addEventListener('load', checkScroll);
-            window.addEventListener('scroll', checkScroll);
-
-// normaliza acentos y mayúsculas (Crédito / Credito)
-function normalizePay(str){
-  return (str || '')
-    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
-    .trim().toLowerCase();
-}
-
-            // Load cart
-            updateCartUI();
-            document.getElementById('paymentMethod').addEventListener('change', updateCartUI);
-        });
-
-        function scrollToCategory(categoryId, evt) {
-            evt = evt || (typeof event !== 'undefined' ? event : null);
-            if (evt) evt.preventDefault();
-            const element = document.getElementById(categoryId);
-            if (element) {
-                element.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            }
-        }
-
-        // Cart logic
-        let currentSubproductItem = null;
-        let currentDependentItem = null;
-
-        function addItemToCart(name, itemId, price, isVegan, hasSubproducts, requiredSelections, requiresPizza = false, pizzaSelection = null) {
-            if (!isOpen) {
-                alert('Lo sentimos, estamos cerrados en este momento.');
-                return;
-            }
-            console.log('addItemToCart:', {name, itemId, price, isVegan, hasSubproducts, requiredSelections, requiresPizza, pizzaSelection});
-            let displayName = isVegan ? `${name} (Vegana)` : name;
-
-            if (hasSubproducts) {
-                openSubproductModal(itemId, displayName, price, isVegan, requiredSelections);
-            } else if (requiresPizza && !pizzaSelection) {
-                openDependentProductModal(itemId, displayName, price, isVegan);
-            } else {
-                addToCart(displayName, price, itemId, isVegan, [], pizzaSelection);
-            }
-        }
-
-        function addToCart(name, price, itemId, isVegan, selectedSubproducts = [], pizzaSelection = null, variantId = null) {
-            console.log('addToCart:', {name, price, itemId, isVegan, selectedSubproducts, pizzaSelection, variantId});
-            const cart = JSON.parse(localStorage.getItem('cart')) || [];
-            let displayName = name;
-            let totalPrice = price;
-
-            if (pizzaSelection) {
-                displayName = `${name} + ${pizzaSelection.name}`;
-                totalPrice += pizzaSelection.price;
-            }
-
-            const item = {
-                id: itemId,
-                variantId: variantId,
-                name: displayName,
-                price: totalPrice,
-                quantity: 1,
-                isVegan: isVegan,
-                subproducts: selectedSubproducts,
-                pizzaSelection: pizzaSelection
-            };
-
-            const existingItem = cart.find(cartItem =>
-                cartItem.id === itemId &&
-                (cartItem.variantId ?? null) === (variantId ?? null) &&
-                cartItem.isVegan === isVegan &&
-                JSON.stringify(cartItem.subproducts) === JSON.stringify(selectedSubproducts) &&
-                JSON.stringify(cartItem.pizzaSelection) === JSON.stringify(pizzaSelection)
-            );
-            if (existingItem) {
-                existingItem.quantity += 1;
-            } else {
-                cart.push(item);
-            }
-
-            localStorage.setItem('cart', JSON.stringify(cart));
-            updateCartUI();
-            showCartButton();
-        }
-
-        // ====== VARIANTES con precio propio ======
-        // Marca la pill elegida y actualiza precio + descripción visibles.
-        function selectVariant(pill) {
-            const picker = pill.closest('.variant-picker');
-            picker.querySelectorAll('.variant-pill').forEach(p => p.classList.remove('active'));
-            pill.classList.add('active');
-
-            const price = parseFloat(pill.dataset.variantPrice);
-            const desc  = pill.dataset.variantDesc || '';
-
-            const priceEl = picker.querySelector('.variant-current-price');
-            priceEl.dataset.price = price;
-            priceEl.textContent = price.toLocaleString('es-AR', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-
-            const descEl = picker.querySelector('.variant-desc');
-            if (descEl) descEl.textContent = desc;
-        }
-
-        // Agrega al carrito la variante actualmente seleccionada en la tarjeta.
-        function addSelectedVariantToCart(btn) {
-            if (!isOpen) {
-                alert('Lo sentimos, estamos cerrados en este momento.');
-                return;
-            }
-            const card   = btn.closest('.pizza-item');
-            const picker = btn.closest('.variant-picker');
-            const active = picker.querySelector('.variant-pill.active') || picker.querySelector('.variant-pill');
-            if (!active) return;
-
-            const itemId    = card.dataset.itemId;
-            const baseName  = card.dataset.itemName;
-            const variantId = 'v' + active.dataset.variantId; // prefijo para no chocar con ids de item
-            const vName     = active.dataset.variantName;
-            const vPrice    = parseFloat(active.dataset.variantPrice);
-
-            addToCart(`${baseName} — ${vName}`, vPrice, itemId, false, [], null, variantId);
-        }
-
-
-function normalizePay(str){
-  return (str || '')
-    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
-    .trim().toLowerCase();
-}
-
-        function updateCartUI() {
-  const cart = JSON.parse(localStorage.getItem('cart')) || [];
-  const cartCount = document.getElementById('cartCount');
-  const cartTotal = document.getElementById('cartTotal');
-  const cartItems = document.getElementById('cartItems');
-  const cartContainer = document.getElementById('cartContainer');
-  const paymentMethod = document.getElementById('paymentMethod').value;
-  const creditWarning = document.getElementById('creditWarning');
-  const transferWarning = document.getElementById('transferWarning');
-
-  let total = 0;
-  let itemCount = 0;
-
-  cartItems.innerHTML = '';
-
-  cart.forEach((item, index) => {
-    let itemTotal = item.price * item.quantity;
-    let displayName = item.name;
-
-    if (item.subproducts && item.subproducts.length > 0) {
-      displayName += ` (${item.subproducts.map(s => s.name).join(', ')})`;
-    }
-    if (item.dependentPizza) {
-      displayName += ` + ${item.dependentPizza.name}`;
-      itemTotal += item.dependentPizza.price * item.quantity;
-    }
-
-    const safeName = displayName.replace(/"/g, '&quot;');
-    const cartItem = document.createElement('div');
-    cartItem.className = 'cart-item';
-    cartItem.innerHTML = `
-      <div class="cart-item-info">
-        <button type="button" class="cart-item-remove" onclick="removeCartItem(${index})" title="Eliminar este ítem" aria-label="Eliminar ${safeName}">✕</button>
-        <span class="cart-item-name">${displayName} x${item.quantity}</span>
-      </div>
-      <span class="cart-item-price">$${itemTotal.toFixed(2)}</span>
-    `;
-    cartItems.appendChild(cartItem);
-
-    total += itemTotal;
-    itemCount += item.quantity;
-  });
-
-  // Limpiar mensajes y posible recargo previo
-  creditWarning.classList.remove('active');
-  transferWarning.classList.remove('active');
-  const prevSurcharge = cartItems.querySelector('.cart-surcharge');
-  if (prevSurcharge) prevSurcharge.remove();
-
-  // Método de pago
-  const pm = normalizePay(paymentMethod);
-
-  // Transferencia: solo mensaje
-  if (pm === 'transferencia') {
-    transferWarning.classList.add('active');
-  }
-
-  // Crédito: mensaje + ITEM virtual "Recargo TC"
-  if (pm === 'credito') {
-    creditWarning.classList.add('active');
-    const surcharge = +(total * 0.10).toFixed(2);
-
-    const surchargeRow = document.createElement('div');
-    surchargeRow.className = 'cart-item cart-surcharge';
-    surchargeRow.innerHTML = `<span>Recargo TC x1</span><span>$${surcharge.toFixed(2)}</span>`;
-    cartItems.appendChild(surchargeRow);
-
-    total += surcharge;
-  }
-
-  cartCount.textContent = itemCount;
-  cartTotal.textContent = total.toFixed(2);
-  cartContainer.style.display = itemCount > 0 ? 'block' : 'none';
-}
-
-function removeCartItem(index) {
-  const cart = JSON.parse(localStorage.getItem('cart')) || [];
-  if (index >= 0 && index < cart.length) {
-    cart.splice(index, 1);
-    localStorage.setItem('cart', JSON.stringify(cart));
-    updateCartUI();
-    if (cart.length === 0) {
-      closeCart();
-    }
-  }
-}
-        function showCartButton() {
-            const cartContainer = document.getElementById('cartContainer');
-            cartContainer.style.display = 'block';
-            cartContainer.classList.add('active');
-        }
-
-        function toggleCart(ev) {
-            if (ev && ev.preventDefault) ev.preventDefault();
-            if (ev && ev.stopPropagation) ev.stopPropagation();
-            if (!isOpen) {
-                alert('Lo sentimos, estamos cerrados en este momento.');
-                return;
-            }
-            const modal = document.getElementById('cartModal');
-            const overlay = document.getElementById('overlay');
-            const isVisible = modal.style.display === 'block';
-
-            modal.style.display = isVisible ? 'none' : 'block';
-            overlay.style.display = isVisible ? 'none' : 'block';
-            modal.classList.toggle('active', !isVisible);
-            overlay.classList.toggle('active', !isVisible);
-            updateCartUI();
-        }
-
-        function closeCart(ev) {
-            if (ev && ev.preventDefault) ev.preventDefault();
-            if (ev && ev.stopPropagation) ev.stopPropagation();
-            const modal = document.getElementById('cartModal');
-            const overlay = document.getElementById('overlay');
-            modal.style.display = 'none';
-            overlay.style.display = 'none';
-            modal.classList.remove('active');
-            overlay.classList.remove('active');
-        }
-
-        function clearCart() {
-            if (!isOpen) {
-                alert('Lo sentimos, estamos cerrados en este momento.');
-                return;
-            }
-            localStorage.removeItem('cart');
-            updateCartUI();
-            closeCart();
-        }
-
-        // ---- Tipo de entrega ----
-        let deliveryType = 'retiro'; // 'retiro' | 'envio'
-
-        function setDelivery(type) {
-            deliveryType = type;
-            document.getElementById('btnRetiro').classList.toggle('active', type === 'retiro');
-            document.getElementById('btnEnvio').classList.toggle('active', type === 'envio');
-            document.getElementById('addressGroup').style.display = type === 'envio' ? 'block' : 'none';
-            if (type === 'retiro') document.getElementById('deliveryAddress').value = '';
-        }
-
-        function sendOrder() {
-  const cart = JSON.parse(localStorage.getItem('cart')) || [];
-  const customerName = document.getElementById('customerName').value.trim();
-  const customerPhone = document.getElementById('customerPhone')?.value.trim() || '';
-  const paymentMethod = document.getElementById('paymentMethod').value;
-  const address = document.getElementById('deliveryAddress')?.value.trim() || '';
-
-  if (!customerName) { alert('Por favor ingresa tu nombre para el pedido'); return; }
-  if (!customerPhone) { alert('Por favor ingresá tu teléfono o WhatsApp'); return; }
-  if (deliveryType === 'envio' && !address) { alert('Por favor ingresá la dirección de entrega'); return; }
-  if (!paymentMethod) { alert('Por favor selecciona una forma de pago'); return; }
-  if (cart.length === 0) { alert('El carrito está vacío'); return; }
-
-  try {
-    localStorage.setItem('rrbb_customer_name', customerName);
-    localStorage.setItem('rrbb_customer_phone', customerPhone);
-    if (address) localStorage.setItem('rrbb_customer_address', address);
-  } catch (e) {}
-
-  const entrega = deliveryType === 'envio'
-    ? `🛵 *Envío a domicilio*\nDirección: ${address}`
-    : `🏪 *Retiro en local* (27 de abril 798)`;
-
-  let message = `Hola, soy *${customerName}*`;
-  if (customerPhone) message += ` (${customerPhone})`;
-  message += ` y quisiera hacer el siguiente pedido:\n\n`;
-  let total = 0;
-
-  cart.forEach(item => {
-    let itemTotal = item.price * item.quantity;
-    let displayName = item.name;
-
-    if (item.subproducts && item.subproducts.length > 0) {
-      displayName += ` (${item.subproducts.map(s => s.name).join(', ')})`;
-    }
-    if (item.dependentPizza) {
-      displayName += ` + ${item.dependentPizza.name}`;
-      itemTotal += item.dependentPizza.price * item.quantity;
-    }
-
-    message += `- ${displayName} x${item.quantity}: $${itemTotal.toFixed(2)}\n`;
-    total += itemTotal;
-  });
-
-  const pm = normalizePay(paymentMethod);
-
-  if (pm === 'credito') {
-    const surcharge = +(total * 0.10).toFixed(2);
-    message += `- Recargo TC x1: $${surcharge.toFixed(2)}\n`;
-    total += surcharge;
-  } else if (pm === 'transferencia') {
-    message += `\nDatos para la transferencia: Alias: ${TRANSFER_ALIAS}, Nombre: ${TRANSFER_HOLDER}`;
-  }
-
-  message += `\n\n${entrega}\nTotal: $${total.toFixed(2)}\nForma de pago: ${paymentMethod}`;
-
-  // Registramos el pedido (intención) antes de abrir WhatsApp
-  trackEvent({
-    type: 'order',
-    source: 'home',
-    delivery_type: deliveryType,
-    payment_method: paymentMethod,
-    total: Number(total.toFixed(2)),
-    pickup_time: '',
-    item_count: cart.reduce((n, it) => n + it.quantity, 0),
-    items: cart.map(it => ({ name: it.name, qty: it.quantity, price: it.price }))
-  });
-
-  window.open(`https://wa.me/5493517548030?text=${encodeURIComponent(message)}`, '_blank');
-  clearCart();
-}
-
-        // Subproduct Modal
-        function openSubproductModal(itemId, itemName, itemPrice, isVegan, requiredSelections) {
-            if (!isOpen) {
-                alert('Lo sentimos, estamos cerrados en este momento.');
-                return;
-            }
-            console.log('openSubproductModal:', {itemId, itemName, itemPrice, isVegan, requiredSelections});
-            currentSubproductItem = { id: itemId, name: itemName, price: itemPrice, isVegan: isVegan, requiredSelections: requiredSelections };
-            const modal = document.getElementById('subproductModal');
-            const selectionsDiv = document.getElementById('subproductSelections');
-            const eligibleItems = <?php echo json_encode($eligible_items); ?>;
-
-            if (eligibleItems.length === 0) {
-                selectionsDiv.innerHTML = '<p>No hay pizzas disponibles para seleccionar.</p>';
-                modal.style.display = 'block';
-                modal.classList.add('active');
-                document.getElementById('overlay').style.display = 'block';
-                document.getElementById('overlay').classList.add('active');
-                return;
-            }
-
-            selectionsDiv.innerHTML = '';
-            for (let i = 0; i < requiredSelections; i++) {
-                const select = document.createElement('select');
-                select.id = `subproduct-select-${i}`;
-                select.innerHTML = '<option value="">Selecciona una pizza</option>' +
-                    eligibleItems.map(item =>
-                        `<option value="${item.id}">${item.name}</option>`
-                    ).join('');
-                selectionsDiv.appendChild(select);
-            }
-
-            modal.style.display = 'block';
-            modal.classList.add('active');
-            document.getElementById('overlay').style.display = 'block';
-            document.getElementById('overlay').classList.add('active');
-        }
-
-        function closeSubproductModal() {
-            console.log('closeSubproductModal');
-            const modal = document.getElementById('subproductModal');
-            modal.style.display = 'none';
-            modal.classList.remove('active');
-            document.getElementById('overlay').style.display = 'none';
-            document.getElementById('overlay').classList.remove('active');
-            currentSubproductItem = null;
-        }
-
-        function confirmSubproducts() {
-            if (!isOpen) {
-                alert('Lo sentimos, estamos cerrados en este momento.');
-                return;
-            }
-            if (!currentSubproductItem) return;
-
-            const selections = [];
-            const selectionsDiv = document.getElementById('subproductSelections');
-            const selects = selectionsDiv.querySelectorAll('select');
-
-            for (let select of selects) {
-                if (select.value) {
-                    const item = <?php echo json_encode($eligible_items); ?>.find(i => i.id == select.value);
-                    if (item) {
-                        selections.push({ id: item.id, name: item.name });
-                    }
-                }
-            }
-
-            if (selections.length !== currentSubproductItem.requiredSelections) {
-                alert(`Por favor selecciona exactamente ${currentSubproductItem.requiredSelections} pizzas.`);
-                return;
-            }
-
-            addToCart(
-                currentSubproductItem.name,
-                currentSubproductItem.price,
-                currentSubproductItem.id,
-                currentSubproductItem.isVegan,
-                selections
-            );
-            closeSubproductModal();
-        }
-
-        // Pizza Selection Modal
-        function openDependentProductModal(itemId, itemName, price, isVegan) {
-            if (!isOpen) {
-                alert('Lo sentimos, estamos cerrados en este momento.');
-                return;
-            }
-            currentDependentItem = { id: itemId, name: itemName, price: price, isVegan: isVegan };
-            const modal = document.getElementById('dependentProductModal');
-            const select = document.getElementById('dependentPizzaSelect');
-
-            if (select.options.length <= 1) {
-                alert('No hay pizzas disponibles para seleccionar.');
-                return;
-            }
-
-            document.getElementById('dependentProductTitle').textContent = itemName.split(' (')[0];
-            modal.style.display = 'block';
-            modal.classList.add('active');
-            document.getElementById('overlay').style.display = 'block';
-            document.getElementById('overlay').classList.add('active');
-        }
-
-        function closeDependentProductModal() {
-            const modal = document.getElementById('dependentProductModal');
-            modal.style.display = 'none';
-            modal.classList.remove('active');
-            document.getElementById('overlay').style.display = 'none';
-            document.getElementById('overlay').classList.remove('active');
-            currentDependentItem = null;
-        }
-
-        function confirmDependentProduct() {
-            if (!isOpen) {
-                alert('Lo sentimos, estamos cerrados en este momento.');
-                return;
-            }
-            if (!currentDependentItem) return;
-
-            const select = document.getElementById('dependentPizzaSelect');
-            if (!select.value) {
-                alert('Por favor selecciona una pizza.');
-                return;
-            }
-
-            const selectedOption = select.options[select.selectedIndex];
-            const pizzaSelection = {
-                id: selectedOption.value,
-                name: selectedOption.dataset.name,
-                price: parseFloat(selectedOption.dataset.price)
-            };
-
-            addToCart(
-                currentDependentItem.name,
-                currentDependentItem.price,
-                currentDependentItem.id,
-                currentDependentItem.isVegan,
-                [],
-                pizzaSelection
-            );
-            closeDependentProductModal();
-        }
-    </script>
 </div>
-    <img id="secret-image" class="secret-image" src="https://arrabbiata.com.ar/Uploads/csgif.gif" alt="Carta Secreta" onclick="toggleSecretMode(event)" style="cursor:pointer;">
 
-
+<?php include __DIR__ . '/_carta_scripts.php'; ?>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
-  // Secret mode (imagen + toggle)
-  var secretImage = document.getElementById('secret-image');
-  if (secretImage) {
-    window.showImageInterval = setInterval(function() {
-      secretImage.classList.add('visible');
-      setTimeout(function(){ secretImage.classList.remove('visible'); }, 5000);
-    }, 10000);
-
-    window.toggleSecretMode = function() {
-      document.body.classList.toggle('secret-mode');
-      if (document.body.classList.contains('secret-mode')) {
-        if (window.showImageInterval) { clearInterval(window.showImageInterval); window.showImageInterval = null; }
-        secretImage.style.display = 'none';
-      }
-    };
-  }
-});
-</script>
-
-<script>
-document.addEventListener('DOMContentLoaded', function(){
-  var items = document.querySelectorAll('.category-submenu li');
-  items.forEach(function(li){
-    var txt = (li.textContent || '').trim().toLowerCase();
-    if (txt === 'carta secreta') {
-      li.classList.add('secret-link');
+    // Rotación de galería en sección Nosotros
+    const slides = document.querySelectorAll('.gallery-slide');
+    if (slides.length > 0) {
+        let currentSlide = 0;
+        function showSlide(n) {
+            slides.forEach(s => s.classList.remove('active'));
+            slides[n].classList.add('active');
+        }
+        showSlide(0);
+        setInterval(function() {
+            currentSlide = (currentSlide + 1) % slides.length;
+            showSlide(currentSlide);
+        }, 5000);
     }
-  });
+
+    // Smooth scroll de la barra superior
+    document.querySelectorAll('.nav-menu a[href^="#"]').forEach(anchor => {
+        anchor.addEventListener('click', function(e) {
+            const target = document.querySelector(this.getAttribute('href'));
+            if (target) {
+                e.preventDefault();
+                target.scrollIntoView({ behavior: 'smooth' });
+            }
+        });
+    });
+
+    // Animación de secciones al scrollear
+    const sections = document.querySelectorAll('.section');
+    function checkScroll() {
+        sections.forEach(section => {
+            const rect = section.getBoundingClientRect();
+            if (rect.top < window.innerHeight * 0.7 && rect.top > -section.offsetHeight * 0.7) {
+                section.classList.add('active');
+            } else {
+                section.classList.remove('active');
+            }
+        });
+    }
+    window.addEventListener('load', checkScroll);
+    window.addEventListener('scroll', checkScroll, { passive: true });
 });
 </script>
 </body>

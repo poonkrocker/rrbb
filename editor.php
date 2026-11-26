@@ -1,13 +1,14 @@
 <?php
+session_set_cookie_params([
+    'lifetime' => 0,
+    'path'     => '/',
+    'secure'   => true,
+    'httponly' => true,
+    'samesite' => 'Lax',
+]);
 session_start();
-require_once 'db_connect.php';
+require_once __DIR__ . '/db_connect.php';
 
-// ── Carpeta de uploads compartida entre producción y git ──────────────────────
-// UPLOAD_DIR: ruta física absoluta donde se guardan las imágenes.
-//             Debe ser la misma para ambas instalaciones.
-// UPLOAD_URL: URL pública absoluta con la que se accede a esas imágenes.
-//             Siempre desde la raíz del dominio, sin importar desde qué
-//             instalación se sube.
 define('UPLOAD_DIR', $_SERVER['DOCUMENT_ROOT'] . '/Uploads/');
 define('UPLOAD_URL', '/Uploads/');
 
@@ -16,15 +17,22 @@ if (!isset($_SESSION['admin_id'])) {
     exit;
 }
 
-// Initialize error and success arrays
-$errors = [];
+$errors  = [];
 $success = [];
 
+// ── Token CSRF (definido ANTES de cualquier acción POST) ────────────────────
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+function verifyCsrf(): void {
+    $token = (string)($_POST['csrf_token'] ?? '');
+    if (!hash_equals($_SESSION['csrf_token'], $token)) {
+        http_response_code(403);
+        die('Petición no válida (CSRF).');
+    }
+}
 
-// ── Ajustes del sitio (site_settings): datos de transferencia editables ──
-// Tabla clave/valor liviana; se crea sola la primera vez y se siembra con los
-// valores actuales para no romper nada si todavía no existía.
-if (!function_exists('ensureSiteSettings')) {
+// ── Ajustes del sitio (site_settings): transferencia + trackers ─────────────
 function ensureSiteSettings(PDO $pdo): void {
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS site_settings (
@@ -36,8 +44,10 @@ function ensureSiteSettings(PDO $pdo): void {
     $seed = $pdo->prepare("INSERT IGNORE INTO site_settings (setting_key, setting_value) VALUES (?, ?)");
     $seed->execute(['transfer_alias',  'RRBBPIZZA']);
     $seed->execute(['transfer_holder', 'Ezequiel Urquidi']);
-}}
-if (!function_exists('getSetting')) {
+    $seed->execute(['gtm_id',          'GTM-5JWLLKC7']);
+    $seed->execute(['meta_pixel_id',   '313442609878673']);
+    $seed->execute(['ga4_id',          '']);
+}
 function getSetting(PDO $pdo, string $key, string $default = ''): string {
     try {
         $st = $pdo->prepare("SELECT setting_value FROM site_settings WHERE setting_key = ?");
@@ -47,197 +57,167 @@ function getSetting(PDO $pdo, string $key, string $default = ''): string {
     } catch (Throwable $e) {
         return $default;
     }
-}}
+}
 try { ensureSiteSettings($pdo); } catch (Throwable $e) { error_log('site_settings bootstrap: ' . $e->getMessage()); }
 
+// ── Limpieza automática de variantes y subproductos huérfanos en la BD ──────
+try {
+    $pdo->exec("DELETE FROM menu_item_variants WHERE item_id NOT IN (SELECT id FROM menu_items)");
+} catch (Throwable $e) { /* tabla opcional si aún no existiera */ }
+try {
+    $pdo->exec("DELETE FROM menu_item_subproducts WHERE parent_item_id NOT IN (SELECT id FROM menu_items) OR sub_item_id NOT IN (SELECT id FROM menu_items)");
+} catch (Throwable $e) { /* tabla opcional */ }
 
-/* ==== HOURS_PATCH_24PLUS_START ==== */
-/* Helpers y manejador temprano para business_hours con soporte 24+ y cruces de medianoche */
-
-// ---- Helpers ----
-if (!function_exists('normTime')) {
+// ── Horarios de Atención (unificados en una sola fila aunque crucen medianoche) ──
 function normTime(?string $t): string {
     $t = trim((string)$t);
-    if ($t === '') return $t;
-    if (preg_match('/^\d{1,3}:\d{2}$/', $t)) return $t . ':00';
-    if (preg_match('/^\d{1,3}:\d{2}:\d{2}$/', $t)) return $t;
+    if ($t === '') return '';
     $parts = explode(':', $t);
-    $h = str_pad((string)max(0, (int)($parts[0] ?? 0)), 2, '0', STR_PAD_LEFT);
-    $m = str_pad((string)max(0, (int)($parts[1] ?? 0)), 2, '0', STR_PAD_LEFT);
-    $s = str_pad((string)max(0, (int)($parts[2] ?? 0)), 2, '0', STR_PAD_LEFT);
-    return "$h:$m:$s";
-}}
+    $h = max(0, min(23, (int)($parts[0] ?? 0)));
+    $m = max(0, min(59, (int)($parts[1] ?? 0)));
+    return str_pad((string)$h, 2, '0', STR_PAD_LEFT) . ':' . str_pad((string)$m, 2, '0', STR_PAD_LEFT) . ':00';
+}
 
-if (!function_exists('timeToSeconds')) {
-function timeToSeconds(string $hhmmss): int {
-    [$h,$m,$s] = array_map('intval', explode(':', $hhmmss));
-    return $h*3600 + $m*60 + $s;
-}}
-
-if (!function_exists('secondsToHms')) {
-function secondsToHms(int $secs): string {
-    $secs = $secs % 86400;
-    $h = str_pad((string)intdiv($secs, 3600), 2, '0', STR_PAD_LEFT);
-    $m = str_pad((string)intdiv($secs % 3600, 60), 2, '0', STR_PAD_LEFT);
-    $s = str_pad((string)($secs % 60), 2, '0', STR_PAD_LEFT);
-    return "$h:$m:$s";
-}}
-
-if (!function_exists('nextDayOfWeek')) {
 function nextDayOfWeek(string $day): string {
     $days = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'];
     $i = array_search($day, $days, true);
     if ($i === false) throw new Exception("Día inválido: $day");
     return $days[($i + 1) % 7];
-}}
+}
 
-if (!function_exists('hasOverlap')) {
-function hasOverlap(PDO $pdo, string $day, string $startHms, string $endHms, ?int $excludeId = null): bool {
-    $sql = "SELECT COUNT(*) FROM business_hours WHERE day_of_week = :day ";
-    if ($excludeId) $sql .= "AND id != :id ";
-    $sql .= "AND NOT (CAST(end_time AS TIME) <= CAST(:start AS TIME) OR CAST(start_time AS TIME) >= CAST(:end AS TIME))";
-    $st = $pdo->prepare($sql);
-    $st->bindValue(':day', $day);
-    if ($excludeId) $st->bindValue(':id', $excludeId, PDO::PARAM_INT);
-    $st->bindValue(':start', $startHms);
-    $st->bindValue(':end', $endHms);
-    $st->execute();
-    return (int)$st->fetchColumn() > 0;
-}}
+function hhmmToMinutes(string $hms): int {
+    $parts = explode(':', $hms);
+    return ((int)($parts[0] ?? 0)) * 60 + ((int)($parts[1] ?? 0));
+}
 
-if (!function_exists('normalizeAndSplit')) {
-function normalizeAndSplit(string $day, string $startHms, string $endHms): array {
-    $dayOut = $day;
-    $s = timeToSeconds($startHms);
-    $e = timeToSeconds($endHms);
-    while ($s >= 86400) {
-        $s -= 86400; $e -= 86400; $dayOut = nextDayOfWeek($dayOut);
+/**
+ * Convierte un turno (día + inicio + fin) en 1 o 2 intervalos [startMin, endMin)
+ * sobre el círculo semanal de 0..10080 minutos, soportando cruces de medianoche
+ * (ej. Viernes 20:30 a 00:30, o Domingo 20:30 a Lunes 00:30).
+ */
+function shiftToWeekIntervals(string $day, string $startHms, string $endHms): array {
+    $days = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'];
+    $dayIdx = array_search($day, $days, true);
+    if ($dayIdx === false) throw new Exception("Día inválido: $day");
+
+    $sMin = hhmmToMinutes($startHms);
+    $eMin = hhmmToMinutes($endHms);
+    if ($sMin === $eMin) {
+        throw new Exception("La hora de inicio y la de fin no pueden ser iguales.");
     }
-    if ($e < 86400 && $e > $s) {
-        return [[ $dayOut, secondsToHms($s), secondsToHms($e) ]];
+
+    // Si end_time era legado 23:59:59, equivale al cierre 00:00 (24:00 del mismo día)
+    if (preg_match('/^23:59(?::\d{2})?$/', $endHms)) {
+        $absStart = $dayIdx * 1440 + $sMin;
+        $absEnd   = ($dayIdx + 1) * 1440;
+    } elseif ($eMin > $sMin) {
+        $absStart = $dayIdx * 1440 + $sMin;
+        $absEnd   = $dayIdx * 1440 + $eMin;
+    } else {
+        // Cruza medianoche hacia la madrugada del día siguiente (ej. 20:30 -> 00:30 o 20:00 -> 00:00)
+        $absStart = $dayIdx * 1440 + $sMin;
+        $absEnd   = ($dayIdx + 1) * 1440 + $eMin;
     }
-    $firstEnd = 86399;
-    $secondStart = 0;
-    $secondEnd = $e;
-    if ($secondEnd >= 86400) $secondEnd -= 86400;
-    $next = nextDayOfWeek($dayOut);
+
+    $weekTotal = 7 * 1440; // 10080
+    if ($absEnd <= $weekTotal) {
+        return [[$absStart, $absEnd]];
+    }
     return [
-        [ $dayOut, secondsToHms($s), secondsToHms($firstEnd) ],
-        [ $next, secondsToHms($secondStart), secondsToHms($secondEnd) ],
+        [$absStart, $weekTotal],
+        [0, $absEnd - $weekTotal],
     ];
-}}
+}
 
-// ---- Manejador temprano ----
-if (isset($_POST['action']) && in_array($_POST['action'], ['add_business_hours','update_business_hours','delete_business_hours'], true)) {
-    try {
-        if ($_POST['action'] === 'add_business_hours') {
-            $day        = isset($_POST['day_of_week']) ? trim($_POST['day_of_week']) : '';
-            $start_time = isset($_POST['start_time']) ? normTime($_POST['start_time']) : '';
-            $end_time   = isset($_POST['end_time']) ? normTime($_POST['end_time']) : '';
-            if ($day === '' || $start_time === '' || $end_time === '') {
-                throw new Exception("Día, inicio y fin son obligatorios.");
-            }
-            $spans = normalizeAndSplit($day, $start_time, $end_time);
-            foreach ($spans as [$d,$a,$b]) {
-                if (hasOverlap($pdo, $d, $a, $b, null)) {
-                    throw new Exception("Error: El horario se superpone con otro horario existente para $d.");
-                }
-            }
-            $pdo->beginTransaction();
-            try {
-                $ins = $pdo->prepare("INSERT INTO business_hours (day_of_week, start_time, end_time) VALUES (?,?,?)");
-                foreach ($spans as [$d,$a,$b]) { $ins->execute([$d,$a,$b]); }
-                $pdo->commit();
-                $success[] = count($spans)===2 ? "Horario agregado (cruza medianoche)." : "Horario agregado correctamente.";
-            } catch (Throwable $e) { $pdo->rollBack(); throw $e; }
-        } elseif ($_POST['action'] === 'update_business_hours') {
-            $id         = isset($_POST['id']) ? (int)$_POST['id'] : 0;
-            $day        = isset($_POST['day_of_week']) ? trim($_POST['day_of_week']) : '';
-            $start_time = isset($_POST['start_time']) ? normTime($_POST['start_time']) : '';
-            $end_time   = isset($_POST['end_time']) ? normTime($_POST['end_time']) : '';
-            if (!$id) throw new Exception("ID inválido.");
-            if ($day === '' || $start_time === '' || $end_time === '') {
-                throw new Exception("Día, inicio y fin son obligatorios.");
-            }
-            $spans = normalizeAndSplit($day, $start_time, $end_time);
-            foreach ($spans as $idx => [$d,$a,$b]) {
-                $exclude = ($idx==0) ? $id : null;
-                if (hasOverlap($pdo, $d, $a, $b, $exclude)) {
-                    throw new Exception("Error: El horario se superpone con otro horario existente para $d.");
-                }
-            }
-            $pdo->beginTransaction();
-            try {
-                $pdo->prepare("DELETE FROM business_hours WHERE id = ?")->execute([$id]);
-                $ins = $pdo->prepare("INSERT INTO business_hours (day_of_week, start_time, end_time) VALUES (?,?,?)");
-                foreach ($spans as [$d,$a,$b]) { $ins->execute([$d,$a,$b]); }
-                $pdo->commit();
-                $success[] = count($spans)===2 ? "Horario actualizado (cruza medianoche)." : "Horario actualizado correctamente.";
-            } catch (Throwable $e) { $pdo->rollBack(); throw $e; }
-        } elseif ($_POST['action'] === 'delete_business_hours') {
-            $id = isset($_POST['id']) ? (int)$_POST['id'] : 0;
-            if (!$id) throw new Exception("ID inválido.");
-            $pdo->prepare("DELETE FROM business_hours WHERE id = ?")->execute([$id]);
-            $success[] = "Horario eliminado.";
+function hasShiftOverlapWeek(PDO $pdo, string $day, string $startHms, string $endHms, ?int $excludeId = null): ?string {
+    $candidateSegs = shiftToWeekIntervals($day, $startHms, $endHms);
+    $rows = $pdo->query("SELECT id, day_of_week, start_time, end_time FROM business_hours")->fetchAll(PDO::FETCH_ASSOC);
+
+    foreach ($rows as $r) {
+        if ($excludeId !== null && (int)$r['id'] === $excludeId) continue;
+        try {
+            $existingSegs = shiftToWeekIntervals((string)$r['day_of_week'], (string)$r['start_time'], (string)$r['end_time']);
+        } catch (Throwable $e) {
+            continue;
         }
-        // Evitamos que el resto del archivo procese estas acciones nuevamente
-        $_POST['action'] = '__hours_handled__';
-    } catch (Throwable $ex) {
-        $errors[] = $ex->getMessage();
-        $_POST['action'] = '__hours_handled__';
+        foreach ($candidateSegs as [$a1, $b1]) {
+            foreach ($existingSegs as [$a2, $b2]) {
+                if (max($a1, $a2) < min($b1, $b2)) {
+                    return "{$r['day_of_week']} (" . substr((string)$r['start_time'], 0, 5) . " a " . substr((string)$r['end_time'], 0, 5) . ")";
+                }
+            }
+        }
+    }
+    return null;
+}
+
+/**
+ * Fusiona automáticamente cualquier par legado partido en dos filas
+ * (ej. Viernes 20:30 - 23:59:59 + Sábado 00:00:00 - 00:30:00) en una única fila
+ * limpia: Viernes 20:30:00 - 00:30:00.
+ */
+function consolidateLegacyMidnightHours(PDO $pdo): void {
+    $days = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'];
+    $rows = $pdo->query("
+        SELECT id, day_of_week, start_time, end_time
+        FROM business_hours
+        ORDER BY FIELD(day_of_week,'Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'), start_time
+    ")->fetchAll(PDO::FETCH_ASSOC);
+
+    $byDay = [];
+    foreach ($days as $d) $byDay[$d] = [];
+    foreach ($rows as $r) {
+        if (isset($byDay[$r['day_of_week']])) {
+            $byDay[$r['day_of_week']][] = $r;
+        }
+    }
+
+    $consumedIds = [];
+    for ($i = 0; $i < 7; $i++) {
+        $d     = $days[$i];
+        $nextD = $days[($i + 1) % 7];
+        foreach ($byDay[$d] as $row) {
+            $rid = (int)$row['id'];
+            if (isset($consumedIds[$rid])) continue;
+            $e = trim((string)$row['end_time']);
+            if (!preg_match('/^23:59(?::\d{2})?$/', $e)) continue;
+
+            $merged = false;
+            foreach ($byDay[$nextD] as $nextRow) {
+                $nid = (int)$nextRow['id'];
+                if (isset($consumedIds[$nid])) continue;
+                $ns = trim((string)$nextRow['start_time']);
+                $ne = trim((string)$nextRow['end_time']);
+                if (preg_match('/^00:00(?::\d{2})?$/', $ns) && $ne <= '06:00:00') {
+                    $pdo->beginTransaction();
+                    try {
+                        $pdo->prepare("UPDATE business_hours SET end_time = ? WHERE id = ?")->execute([$ne, $rid]);
+                        $pdo->prepare("DELETE FROM business_hours WHERE id = ?")->execute([$nid]);
+                        $pdo->commit();
+                        $consumedIds[$nid] = true;
+                        $merged = true;
+                    } catch (Throwable $ex) {
+                        $pdo->rollBack();
+                    }
+                    break;
+                }
+            }
+            if (!$merged && $e === '23:59:59') {
+                $pdo->prepare("UPDATE business_hours SET end_time = '00:00:00' WHERE id = ?")->execute([$rid]);
+            }
+        }
     }
 }
-/* ==== HOURS_PATCH_24PLUS_END ==== */
+try { consolidateLegacyMidnightHours($pdo); } catch (Throwable $e) { error_log('consolidateLegacyMidnightHours: ' . $e->getMessage()); }
 
-// ---- Inserta metadatos XMP en un archivo WebP ya guardado ----
-function writeXmpToWebP(string $filepath, string $title, string $description = ''): void {
-    $data = @file_get_contents($filepath);
-    if ($data === false || strlen($data) < 12) return;
-    if (substr($data, 0, 4) !== 'RIFF' || substr($data, 8, 4) !== 'WEBP') return;
-
-    $titleEsc = htmlspecialchars($title, ENT_XML1, 'UTF-8');
-    $descEsc  = htmlspecialchars($description, ENT_XML1, 'UTF-8');
-
-    $xmp =
-        '<?xpacket begin="' . "\xEF\xBB\xBF" . '" id="W5M0MpCehiHzreSzNTczkc9d"?>' .
-        '<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="XMP Core 6.0">' .
-        '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">' .
-        '<rdf:Description rdf:about=""' .
-        ' xmlns:dc="http://purl.org/dc/elements/1.1/"' .
-        ' xmlns:xmp="http://ns.adobe.com/xap/1.0/">' .
-        '<dc:title><rdf:Alt><rdf:li xml:lang="x-default">' . $titleEsc . '</rdf:li></rdf:Alt></dc:title>' .
-        ($descEsc !== ''
-            ? '<dc:description><rdf:Alt><rdf:li xml:lang="x-default">' . $descEsc . '</rdf:li></rdf:Alt></dc:description>'
-            : '') .
-        '<xmp:CreatorTool>Arrabbiata Menu Editor</xmp:CreatorTool>' .
-        '</rdf:Description></rdf:RDF></x:xmpmeta>' .
-        '<?xpacket end="w"?>';
-
-    $xmpLen = strlen($xmp);
-    // WebP chunks deben tener tamaño par; si es impar se agrega un byte de padding
-    $xmpPadded = ($xmpLen % 2 === 1) ? $xmp . "\x00" : $xmp;
-    $chunk = 'XMP ' . pack('V', $xmpLen) . $xmpPadded;
-
-    // Insertar el chunk XMP justo después del header RIFF????WEBP (primeros 12 bytes)
-    $newData = substr($data, 0, 12) . $chunk . substr($data, 12);
-
-    // Actualizar el tamaño del RIFF (bytes 4-7, little-endian, = tamaño total - 8)
-    $riffSize = strlen($newData) - 8;
-    $newData  = substr($newData, 0, 4) . pack('V', $riffSize) . substr($newData, 8);
-
-    file_put_contents($filepath, $newData);
-}
-
-// ---- Upload seguro de imágenes con procesamiento a 800×800 WebP ----
-function uploadImageSecure(array $file, string $target_dir, string $itemName = '', string $itemDescription = ''): string {
+// ── Upload seguro de imágenes con procesamiento a 800×800 WebP ──────────────
+function uploadImageSecure(array $file, string $target_dir): string {
     $allowed_mime = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 
-    // Verificar errores de upload
     if ($file['error'] !== UPLOAD_ERR_OK) {
         throw new Exception("Error al recibir el archivo (código {$file['error']}).");
     }
 
-    // Verificar MIME real con finfo (no confiar en el del cliente)
     $finfo = finfo_open(FILEINFO_MIME_TYPE);
     $mime  = finfo_file($finfo, $file['tmp_name']);
     finfo_close($finfo);
@@ -245,18 +225,14 @@ function uploadImageSecure(array $file, string $target_dir, string $itemName = '
         throw new Exception("Tipo de archivo no permitido. Solo se aceptan imágenes (JPG, PNG, WEBP, GIF).");
     }
 
-    // Usar siempre la carpeta compartida, ignorar $target_dir
-    $save_dir = defined('UPLOAD_DIR') ? UPLOAD_DIR : $target_dir;
-    $pub_dir  = defined('UPLOAD_URL') ? UPLOAD_URL : $target_dir;
-
-    // Nombre de salida siempre .webp
+    $save_dir   = defined('UPLOAD_DIR') ? UPLOAD_DIR : $target_dir;
+    $pub_dir    = defined('UPLOAD_URL') ? UPLOAD_URL : $target_dir;
     $image_name = uniqid('img_', true) . '.webp';
 
     if (!file_exists($save_dir)) {
         mkdir($save_dir, 0755, true);
     }
 
-    // Crear recurso GD según el MIME de origen
     switch ($mime) {
         case 'image/jpeg': $src = imagecreatefromjpeg($file['tmp_name']); break;
         case 'image/png':  $src = imagecreatefrompng($file['tmp_name']);  break;
@@ -268,21 +244,17 @@ function uploadImageSecure(array $file, string $target_dir, string $itemName = '
         throw new Exception("No se pudo leer la imagen subida.");
     }
 
-    $orig_w = imagesx($src);
-    $orig_h = imagesy($src);
-
-    // Destino cuadrado 800×800
+    $orig_w   = imagesx($src);
+    $orig_h   = imagesy($src);
     $out_size = 800;
-    $dst = imagecreatetruecolor($out_size, $out_size);
+    $dst      = imagecreatetruecolor($out_size, $out_size);
 
-    // Preservar transparencia para PNG/WebP/GIF
     imagealphablending($dst, false);
     imagesavealpha($dst, true);
     $transparent = imagecolorallocatealpha($dst, 0, 0, 0, 127);
     imagefill($dst, 0, 0, $transparent);
 
-    // Escalar manteniendo relación de aspecto y centrar (letterbox/pillarbox)
-    $scale = min($out_size / $orig_w, $out_size / $orig_h);
+    $scale    = min($out_size / $orig_w, $out_size / $orig_h);
     $scaled_w = (int)round($orig_w * $scale);
     $scaled_h = (int)round($orig_h * $scale);
     $offset_x = (int)(($out_size - $scaled_w) / 2);
@@ -291,8 +263,6 @@ function uploadImageSecure(array $file, string $target_dir, string $itemName = '
     imagecopyresampled($dst, $src, $offset_x, $offset_y, 0, 0, $scaled_w, $scaled_h, $orig_w, $orig_h);
 
     $dest = $save_dir . $image_name;
-
-    // Guardar como WebP calidad 80
     if (!imagewebp($dst, $dest, 80)) {
         throw new Exception("Error al guardar la imagen procesada en el servidor.");
     }
@@ -300,19 +270,10 @@ function uploadImageSecure(array $file, string $target_dir, string $itemName = '
     imagedestroy($src);
     imagedestroy($dst);
 
-    // XMP desactivado: corrompía el WebP (insertaba el chunk 'XMP ' antes de la
-    // imagen, dejando el archivo ilegible). El alt del <img> ya cubre el SEO.
-    // if ($itemName !== '') {
-    //     writeXmpToWebP($dest, $itemName, $itemDescription);
-    // }
-
-    // Devolver URL pública absoluta (accesible desde cualquier instalación)
     return $pub_dir . $image_name;
 }
 
-// ---- Upload desde datos base64 (imagen recortada en el cliente) ----
-function uploadImageFromBase64(string $base64data, string $target_dir, string $itemName = '', string $itemDescription = ''): string {
-    // Espera formato: data:image/TYPE;base64,XXXXX
+function uploadImageFromBase64(string $base64data, string $target_dir): string {
     if (!preg_match('/^data:(image\/(?:jpeg|png|webp|gif));base64,(.+)$/s', $base64data, $m)) {
         throw new Exception("Formato de imagen recortada inválido.");
     }
@@ -322,77 +283,89 @@ function uploadImageFromBase64(string $base64data, string $target_dir, string $i
         throw new Exception("Datos de imagen recortada corruptos.");
     }
 
-    // Guardar temporalmente para reusar uploadImageSecure con GD
-    $tmp = tempnam(sys_get_temp_dir(), 'crop_');
-    file_put_contents($tmp, $raw);
-
-    // Usar GD directamente (misma lógica que uploadImageSecure)
     $allowed_mime = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
     if (!in_array($mime, $allowed_mime, true)) {
-        unlink($tmp);
         throw new Exception("Tipo MIME de imagen recortada no permitido.");
     }
 
-    $fake_file = ['error' => UPLOAD_ERR_OK, 'tmp_name' => $tmp];
-    $result = uploadImageSecure($fake_file, $target_dir, $itemName, $itemDescription);
-    unlink($tmp);
-    return $result;
-}
-
-// ---- Helper: parsear visible_days en formato franjas ----
-if (!function_exists('parseSchedules')) {
-function parseSchedules(?string $json): array {
-    if (!$json) return [['days' => [], 'start' => '', 'end' => '']];
-    $decoded = json_decode($json, true);
-    if (!is_array($decoded)) return [['days' => [], 'start' => '', 'end' => '']];
-    // Formato nuevo: array de objetos con clave 'start'
-    if (!empty($decoded) && isset($decoded[0]['start'])) return $decoded;
-    // Formato legado: array plano de días → migrar a franja sin horario
-    $days = array_filter($decoded, 'is_string');
-    return [['days' => array_values($days), 'start' => '', 'end' => '']];
-}}
-
-// ---- Token CSRF ----
-if (empty($_SESSION['csrf_token'])) {
-    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
-}
-function verifyCsrf(): void {
-    $token = $_POST['csrf_token'] ?? '';
-    if (!hash_equals($_SESSION['csrf_token'], $token)) {
-        http_response_code(403);
-        die('Petición no válida (CSRF).');
+    $tmp = tempnam(sys_get_temp_dir(), 'crop_');
+    file_put_contents($tmp, $raw);
+    try {
+        $fake_file = ['error' => UPLOAD_ERR_OK, 'tmp_name' => $tmp];
+        return uploadImageSecure($fake_file, $target_dir);
+    } finally {
+        @unlink($tmp);
     }
 }
 
-// Handle form submissions
+// ── Procesamiento de TODAS las acciones POST (protegidas por CSRF) ──────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     verifyCsrf();
+    $action = (string)$_POST['action'];
+
     try {
-        if ($_POST['action'] === 'add_item') {
-            $name = trim($_POST['name']);
-            $price = (float)$_POST['price'];
-            $secondary_price = !empty($_POST['secondary_price']) ? (float)$_POST['secondary_price'] : null;
-            $category_id = (int)$_POST['category_id'];
-            $description = trim($_POST['description']);
-            $is_visible = isset($_POST['is_visible']) ? 1 : 0;
-            $has_vegan_option = isset($_POST['has_vegan_option']) ? 1 : 0;
-            $requires_pizza = isset($_POST['requires_pizza']) ? 1 : 0;
-            $is_weekly_special = isset($_POST['is_weekly_special']) ? 1 : 0;
-            $weekly_special_text = !empty($_POST['weekly_special_text']) ? trim($_POST['weekly_special_text']) : '¡Pizza de la semana!';
-            $is_secret_menu = isset($_POST['is_secret_menu']) ? 1 : 0;
-            // Si es carta secreta, forzar el texto
-            if ($is_secret_menu) {
-                $weekly_special_text = 'Carta Secreta!';
+        if ($action === 'add_business_hours') {
+            $day        = trim((string)($_POST['day_of_week'] ?? ''));
+            $start_time = normTime($_POST['start_time'] ?? '');
+            $end_time   = normTime($_POST['end_time']   ?? '');
+            if ($day === '' || $start_time === '' || $end_time === '') {
+                throw new Exception("Día, hora de inicio y hora de fin son obligatorios.");
             }
-            $visible_start_time = null; // ya no se usa; las franjas van en visible_days
-            $visible_end_time   = null;
-            $visible_days       = null;
+            $conflict = hasShiftOverlapWeek($pdo, $day, $start_time, $end_time, null);
+            if ($conflict !== null) {
+                throw new Exception("El horario se superpone con otro turno existente: $conflict.");
+            }
+            $pdo->prepare("INSERT INTO business_hours (day_of_week, start_time, end_time) VALUES (?, ?, ?)")
+                ->execute([$day, $start_time, $end_time]);
+            $crosses = ($end_time <= $start_time);
+            $success[] = $crosses
+                ? "Horario agregado en un solo paso ({$day} de " . substr($start_time,0,5) . " a " . substr($end_time,0,5) . " del " . nextDayOfWeek($day) . ")."
+                : "Horario agregado correctamente.";
+
+        } elseif ($action === 'update_business_hours') {
+            $id         = (int)($_POST['id'] ?? 0);
+            $day        = trim((string)($_POST['day_of_week'] ?? ''));
+            $start_time = normTime($_POST['start_time'] ?? '');
+            $end_time   = normTime($_POST['end_time']   ?? '');
+            if ($id <= 0) throw new Exception("ID de horario inválido.");
+            if ($day === '' || $start_time === '' || $end_time === '') {
+                throw new Exception("Día, hora de inicio y hora de fin son obligatorios.");
+            }
+            $conflict = hasShiftOverlapWeek($pdo, $day, $start_time, $end_time, $id);
+            if ($conflict !== null) {
+                throw new Exception("El horario se superpone con otro turno existente: $conflict.");
+            }
+            $pdo->prepare("UPDATE business_hours SET day_of_week = ?, start_time = ?, end_time = ? WHERE id = ?")
+                ->execute([$day, $start_time, $end_time, $id]);
+            $success[] = "Horario actualizado correctamente.";
+
+        } elseif ($action === 'delete_business_hours') {
+            $id = (int)($_POST['id'] ?? 0);
+            if ($id <= 0) throw new Exception("ID de horario inválido.");
+            $pdo->prepare("DELETE FROM business_hours WHERE id = ?")->execute([$id]);
+            $success[] = "Horario eliminado correctamente.";
+
+        } elseif ($action === 'add_item') {
+            $name               = trim((string)($_POST['name'] ?? ''));
+            $price              = (float)($_POST['price'] ?? 0);
+            $category_id        = (int)($_POST['category_id'] ?? 0);
+            $description        = trim((string)($_POST['description'] ?? ''));
+            $is_visible         = isset($_POST['is_visible']) ? 1 : 0;
+            $has_vegan_option   = isset($_POST['has_vegan_option']) ? 1 : 0;
+            $is_weekly_special  = isset($_POST['is_weekly_special']) ? 1 : 0;
+            $is_secret_menu     = isset($_POST['is_secret_menu']) ? 1 : 0;
+            $weekly_special_text = trim((string)($_POST['weekly_special_text'] ?? ''));
+            if ($weekly_special_text === '') {
+                $weekly_special_text = $is_secret_menu && !$is_weekly_special ? '¡Carta Secreta!' : '¡Pizza de la semana!';
+            }
+
+            $visible_days = null;
             if (!empty($_POST['schedule_days']) && is_array($_POST['schedule_days'])) {
                 $schedules = [];
                 foreach ($_POST['schedule_days'] as $idx => $days) {
                     if (empty($days)) continue;
-                    $start = $_POST['schedule_start'][$idx] ?? '';
-                    $end   = $_POST['schedule_end'][$idx]   ?? '';
+                    $start = trim((string)($_POST['schedule_start'][$idx] ?? ''));
+                    $end   = trim((string)($_POST['schedule_end'][$idx]   ?? ''));
                     $schedules[] = [
                         'days'  => array_values(array_filter((array)$days)),
                         'start' => $start,
@@ -403,42 +376,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     $visible_days = json_encode($schedules, JSON_UNESCAPED_UNICODE);
                 }
             }
-            $display_order = (int)$_POST['display_order'];
-            $required_selections = !empty($_POST['required_selections']) ? (int)$_POST['required_selections'] : null;
+            $display_order = (int)($_POST['display_order'] ?? 0);
 
-            if (empty($name) || $price <= 0 || $category_id <= 0) {
+            if ($name === '' || $price <= 0 || $category_id <= 0) {
                 throw new Exception("Nombre, precio y categoría son obligatorios y deben ser válidos.");
-            }
-            if ($secondary_price !== null && $secondary_price <= 0) {
-                throw new Exception("El precio secundario debe ser mayor que 0 si se especifica.");
             }
 
             $image_url = '';
             if (!empty($_POST['cropped_image_data'])) {
-                // Imagen recortada desde el cliente (base64)
-                $image_url = uploadImageFromBase64($_POST['cropped_image_data'], "Uploads/", $name, $description);
+                $image_url = uploadImageFromBase64((string)$_POST['cropped_image_data'], "Uploads/");
             } elseif (!empty($_POST['image_url'])) {
-                $image_url = filter_var($_POST['image_url'], FILTER_SANITIZE_URL);
-                if (!filter_var($image_url, FILTER_VALIDATE_URL)) {
+                $candidate = filter_var((string)$_POST['image_url'], FILTER_SANITIZE_URL);
+                if (!preg_match('/^https?:\/\//i', $candidate) || !filter_var($candidate, FILTER_VALIDATE_URL)) {
                     throw new Exception("La URL de la imagen no es válida.");
                 }
+                $image_url = $candidate;
             } elseif (!empty($_FILES['image']['name'])) {
-                $image_url = uploadImageSecure($_FILES['image'], "Uploads/", $name, $description);
+                $image_url = uploadImageSecure($_FILES['image'], "Uploads/");
             }
 
             $stmt = $pdo->prepare("
-                INSERT INTO menu_items (name, price, secondary_price, category_id, image_url, description, is_visible, has_vegan_option, requires_pizza, is_weekly_special, weekly_special_text, visible_start_time, visible_end_time, visible_days, display_order, required_selections, is_secret_menu)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO menu_items
+                    (name, price, secondary_price, category_id, image_url, description, is_visible, has_vegan_option, requires_pizza, is_weekly_special, weekly_special_text, visible_start_time, visible_end_time, visible_days, display_order, required_selections, is_secret_menu)
+                VALUES (?, ?, NULL, ?, ?, ?, ?, ?, 0, ?, ?, NULL, NULL, ?, ?, NULL, ?)
             ");
             $stmt->execute([
-                $name, $price, $secondary_price, $category_id, $image_url, $description, $is_visible,
-                $has_vegan_option, $requires_pizza, $is_weekly_special, $weekly_special_text, $visible_start_time, $visible_end_time, $visible_days,
-                $display_order, $required_selections, $is_secret_menu
+                $name, $price, $category_id, $image_url, $description, $is_visible,
+                $has_vegan_option, $is_weekly_special, $weekly_special_text, $visible_days,
+                $display_order, $is_secret_menu,
             ]);
 
-            $item_id = $pdo->lastInsertId();
+            $item_id = (int)$pdo->lastInsertId();
 
-            // Variantes con precio propio (Muzza / Fugazzeta / etc.)
             if (!empty($_POST['variant_names']) && is_array($_POST['variant_names'])) {
                 $vstmt = $pdo->prepare("INSERT INTO menu_item_variants (item_id, name, description, price, display_order) VALUES (?, ?, ?, ?, ?)");
                 foreach ($_POST['variant_names'] as $vi => $vname) {
@@ -446,57 +415,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     $vprice = isset($_POST['variant_prices'][$vi]) ? (float)$_POST['variant_prices'][$vi] : 0;
                     $vdesc  = trim((string)($_POST['variant_descriptions'][$vi] ?? ''));
                     if ($vname === '' || $vprice <= 0) continue;
-                    $vstmt->execute([$item_id, $vname, ($vdesc !== '' ? $vdesc : null), $vprice, $vi]);
-                }
-            }
-
-            if (!empty($_POST['sub_item_ids']) && !empty($_POST['sub_item_quantities'])) {
-                $stmt = $pdo->prepare("INSERT INTO menu_item_subproducts (parent_item_id, sub_item_id, quantity, is_required) VALUES (?, ?, ?, ?)");
-                foreach ($_POST['sub_item_ids'] as $index => $sub_item_id) {
-                    $sub_item_id = (int)$_POST['sub_item_ids'][$index];
-                    $quantity = (int)$_POST['sub_item_quantities'][$index];
-                    $is_required = isset($_POST['sub_item_required'][$index]) ? 1 : 0;
-                    if ($sub_item_id && $quantity > 0 && $sub_item_id != $item_id) {
-                        $stmt->execute([$item_id, $sub_item_id, $quantity, $is_required]);
-                    }
+                    $vstmt->execute([$item_id, $vname, ($vdesc !== '' ? $vdesc : null), $vprice, (int)$vi]);
                 }
             }
 
             $success[] = "Producto agregado correctamente.";
-        } elseif ($_POST['action'] === 'delete_item') {
-            $id = (int)$_POST['id'];
-            $stmt = $pdo->prepare("DELETE FROM menu_item_subproducts WHERE parent_item_id = ?");
-            $stmt->execute([$id]);
-            $pdo->prepare("DELETE FROM menu_item_variants WHERE item_id = ?")->execute([$id]);
-            $stmt = $pdo->prepare("DELETE FROM menu_items WHERE id = ?");
-            $stmt->execute([$id]);
-            $success[] = "Producto eliminado correctamente.";
-        } elseif ($_POST['action'] === 'update_item') {
-            $id = (int)$_POST['id'];
-            $name = trim($_POST['name']);
-            $price = (float)$_POST['price'];
-            $secondary_price = !empty($_POST['secondary_price']) ? (float)$_POST['secondary_price'] : null;
-            $category_id = (int)$_POST['category_id'];
-            $description = trim($_POST['description']);
-            $is_visible = isset($_POST['is_visible']) ? 1 : 0;
-            $has_vegan_option = isset($_POST['has_vegan_option']) ? 1 : 0;
-            $requires_pizza = isset($_POST['requires_pizza']) ? 1 : 0;
-            $is_weekly_special = isset($_POST['is_weekly_special']) ? 1 : 0;
-            $weekly_special_text = !empty($_POST['weekly_special_text']) ? trim($_POST['weekly_special_text']) : '¡Pizza de la semana!';
-            $is_secret_menu = isset($_POST['is_secret_menu']) ? 1 : 0;
-            // Si es carta secreta, forzar el texto
-            if ($is_secret_menu) {
-                $weekly_special_text = 'Carta Secreta!';
+
+        } elseif ($action === 'delete_item') {
+            $id = (int)($_POST['id'] ?? 0);
+            if ($id > 0) {
+                $pdo->prepare("DELETE FROM menu_item_subproducts WHERE parent_item_id = ? OR sub_item_id = ?")->execute([$id, $id]);
+                $pdo->prepare("DELETE FROM menu_item_variants WHERE item_id = ?")->execute([$id]);
+                $pdo->prepare("DELETE FROM menu_items WHERE id = ?")->execute([$id]);
+                $success[] = "Producto eliminado correctamente.";
             }
-            $visible_start_time = null; // ya no se usa; las franjas van en visible_days
-            $visible_end_time   = null;
-            $visible_days       = null;
+
+        } elseif ($action === 'update_item') {
+            $id                 = (int)($_POST['id'] ?? 0);
+            $name               = trim((string)($_POST['name'] ?? ''));
+            $price              = (float)($_POST['price'] ?? 0);
+            $category_id        = (int)($_POST['category_id'] ?? 0);
+            $description        = trim((string)($_POST['description'] ?? ''));
+            $is_visible         = isset($_POST['is_visible']) ? 1 : 0;
+            $has_vegan_option   = isset($_POST['has_vegan_option']) ? 1 : 0;
+            $is_weekly_special  = isset($_POST['is_weekly_special']) ? 1 : 0;
+            $is_secret_menu     = isset($_POST['is_secret_menu']) ? 1 : 0;
+            $weekly_special_text = trim((string)($_POST['weekly_special_text'] ?? ''));
+            if ($weekly_special_text === '') {
+                $weekly_special_text = $is_secret_menu && !$is_weekly_special ? '¡Carta Secreta!' : '¡Pizza de la semana!';
+            }
+
+            $visible_days = null;
             if (!empty($_POST['schedule_days']) && is_array($_POST['schedule_days'])) {
                 $schedules = [];
                 foreach ($_POST['schedule_days'] as $idx => $days) {
                     if (empty($days)) continue;
-                    $start = $_POST['schedule_start'][$idx] ?? '';
-                    $end   = $_POST['schedule_end'][$idx]   ?? '';
+                    $start = trim((string)($_POST['schedule_start'][$idx] ?? ''));
+                    $end   = trim((string)($_POST['schedule_end'][$idx]   ?? ''));
                     $schedules[] = [
                         'days'  => array_values(array_filter((array)$days)),
                         'start' => $start,
@@ -507,61 +462,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     $visible_days = json_encode($schedules, JSON_UNESCAPED_UNICODE);
                 }
             }
-            $display_order = (int)$_POST['display_order'];
-            $required_selections = !empty($_POST['required_selections']) ? (int)$_POST['required_selections'] : null;
+            $display_order = (int)($_POST['display_order'] ?? 0);
 
-            if (empty($name) || $price <= 0 || $category_id <= 0) {
+            if ($id <= 0 || $name === '' || $price <= 0 || $category_id <= 0) {
                 throw new Exception("Nombre, precio y categoría son obligatorios y deben ser válidos.");
             }
-            if ($secondary_price !== null && $secondary_price <= 0) {
-                throw new Exception("El precio secundario debe ser mayor que 0 si se especifica.");
-            }
 
-            $image_url = $_POST['existing_image'];
+            $image_url = (string)($_POST['existing_image'] ?? '');
             if (!empty($_POST['cropped_image_data'])) {
-                // Imagen recortada desde el cliente (base64)
-                $image_url = uploadImageFromBase64($_POST['cropped_image_data'], "Uploads/", $name, $description);
+                $image_url = uploadImageFromBase64((string)$_POST['cropped_image_data'], "Uploads/");
             } elseif (!empty($_POST['image_url'])) {
-                $candidate = filter_var($_POST['image_url'], FILTER_SANITIZE_URL);
-                // Solo procesar como URL externa si empieza con http(s)
-                if (!preg_match('/^https?:\/\//i', $candidate)) {
-                    throw new Exception("La URL de la imagen no es válida.");
-                }
-                if (!filter_var($candidate, FILTER_VALIDATE_URL)) {
+                $candidate = filter_var((string)$_POST['image_url'], FILTER_SANITIZE_URL);
+                if (!preg_match('/^https?:\/\//i', $candidate) || !filter_var($candidate, FILTER_VALIDATE_URL)) {
                     throw new Exception("La URL de la imagen no es válida.");
                 }
                 $image_url = $candidate;
             } elseif (!empty($_FILES['image']['name'])) {
-                $image_url = uploadImageSecure($_FILES['image'], "Uploads/", $name, $description);
+                $image_url = uploadImageSecure($_FILES['image'], "Uploads/");
             }
 
             $stmt = $pdo->prepare("
-                UPDATE menu_items SET name = ?, price = ?, secondary_price = ?, category_id = ?, image_url = ?, description = ?,
-                is_visible = ?, has_vegan_option = ?, requires_pizza = ?, is_weekly_special = ?, weekly_special_text = ?, visible_start_time = ?, visible_end_time = ?,
-                visible_days = ?, display_order = ?, required_selections = ?, is_secret_menu = ?
+                UPDATE menu_items SET
+                    name = ?, price = ?, category_id = ?, image_url = ?, description = ?,
+                    is_visible = ?, has_vegan_option = ?, requires_pizza = 0,
+                    is_weekly_special = ?, weekly_special_text = ?,
+                    visible_start_time = NULL, visible_end_time = NULL, visible_days = ?,
+                    display_order = ?, required_selections = NULL, is_secret_menu = ?
                 WHERE id = ?
             ");
             $stmt->execute([
-                $name, $price, $secondary_price, $category_id, $image_url, $description, $is_visible,
-                $has_vegan_option, $requires_pizza, $is_weekly_special, $weekly_special_text, $visible_start_time, $visible_end_time, $visible_days,
-                $display_order, $required_selections, $is_secret_menu, $id
+                $name, $price, $category_id, $image_url, $description,
+                $is_visible, $has_vegan_option,
+                $is_weekly_special, $weekly_special_text,
+                $visible_days, $display_order, $is_secret_menu, $id,
             ]);
 
-            $stmt = $pdo->prepare("DELETE FROM menu_item_subproducts WHERE parent_item_id = ?");
-            $stmt->execute([$id]);
-            if (!empty($_POST['sub_item_ids']) && !empty($_POST['sub_item_quantities'])) {
-                $stmt = $pdo->prepare("INSERT INTO menu_item_subproducts (parent_item_id, sub_item_id, quantity, is_required) VALUES (?, ?, ?, ?)");
-                foreach ($_POST['sub_item_ids'] as $index => $sub_item_id) {
-                    $sub_item_id = (int)$_POST['sub_item_ids'][$index];
-                    $quantity = (int)$_POST['sub_item_quantities'][$index];
-                    $is_required = isset($_POST['sub_item_required'][$index]) ? 1 : 0;
-                    if ($sub_item_id && $quantity > 0 && $sub_item_id != $id) {
-                        $stmt->execute([$id, $sub_item_id, $quantity, $is_required]);
-                    }
-                }
-            }
-
-            // Variantes con precio propio: borrar y reinsertar (mismo patrón que subproducts).
+            // Limpiar cualquier subproducto legado y regenerar variantes
+            $pdo->prepare("DELETE FROM menu_item_subproducts WHERE parent_item_id = ?")->execute([$id]);
             $pdo->prepare("DELETE FROM menu_item_variants WHERE item_id = ?")->execute([$id]);
             if (!empty($_POST['variant_names']) && is_array($_POST['variant_names'])) {
                 $vstmt = $pdo->prepare("INSERT INTO menu_item_variants (item_id, name, description, price, display_order) VALUES (?, ?, ?, ?, ?)");
@@ -570,272 +507,207 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     $vprice = isset($_POST['variant_prices'][$vi]) ? (float)$_POST['variant_prices'][$vi] : 0;
                     $vdesc  = trim((string)($_POST['variant_descriptions'][$vi] ?? ''));
                     if ($vname === '' || $vprice <= 0) continue;
-                    $vstmt->execute([$id, $vname, ($vdesc !== '' ? $vdesc : null), $vprice, $vi]);
+                    $vstmt->execute([$id, $vname, ($vdesc !== '' ? $vdesc : null), $vprice, (int)$vi]);
                 }
             }
 
-
             $success[] = "Producto actualizado correctamente.";
-        } elseif ($_POST['action'] === 'add_category') {
-            $name = trim($_POST['category_name']);
-            $display_order = (int)$_POST['category_display_order'];
-            if (empty($name)) {
-                throw new Exception("El nombre de la categoría es obligatorio.");
-            }
-            $stmt = $pdo->prepare("INSERT INTO categories (name, display_order) VALUES (?, ?)");
-            $stmt->execute([$name, $display_order]);
+
+        } elseif ($action === 'add_category') {
+            $name          = trim((string)($_POST['category_name'] ?? ''));
+            $display_order = (int)($_POST['category_display_order'] ?? 0);
+            if ($name === '') throw new Exception("El nombre de la categoría es obligatorio.");
+            $pdo->prepare("INSERT INTO categories (name, display_order) VALUES (?, ?)")->execute([$name, $display_order]);
             $success[] = "Categoría agregada correctamente.";
-        } elseif ($_POST['action'] === 'update_category') {
-            $id = (int)$_POST['category_id'];
-            $name = trim($_POST['category_name']);
-            $display_order = (int)$_POST['category_display_order'];
-            if (empty($name)) {
-                throw new Exception("El nombre de la categoría es obligatorio.");
-            }
-            $stmt = $pdo->prepare("UPDATE categories SET name = ?, display_order = ? WHERE id = ?");
-            $stmt->execute([$name, $display_order, $id]);
+
+        } elseif ($action === 'update_category') {
+            $id            = (int)($_POST['category_id'] ?? 0);
+            $name          = trim((string)($_POST['category_name'] ?? ''));
+            $display_order = (int)($_POST['category_display_order'] ?? 0);
+            if ($id <= 0 || $name === '') throw new Exception("El nombre de la categoría es obligatorio.");
+            $pdo->prepare("UPDATE categories SET name = ?, display_order = ? WHERE id = ?")->execute([$name, $display_order, $id]);
             $success[] = "Categoría actualizada correctamente.";
-        } elseif ($_POST['action'] === 'delete_category') {
-            $id = (int)$_POST['category_id'];
+
+        } elseif ($action === 'delete_category') {
+            $id   = (int)($_POST['category_id'] ?? 0);
             $stmt = $pdo->prepare("SELECT COUNT(*) FROM menu_items WHERE category_id = ?");
             $stmt->execute([$id]);
-            if ($stmt->fetchColumn() == 0) {
-                $stmt = $pdo->prepare("DELETE FROM categories WHERE id = ?");
-                $stmt->execute([$id]);
+            if ((int)$stmt->fetchColumn() === 0) {
+                $pdo->prepare("DELETE FROM categories WHERE id = ?")->execute([$id]);
                 $success[] = "Categoría eliminada correctamente.";
             } else {
                 $errors[] = "No se puede eliminar una categoría con productos asociados.";
             }
-        } elseif ($_POST['action'] === 'add_business_hours') {
-            $day = trim($_POST['day_of_week']);
-            $start_time = $_POST['start_time'];
-            $end_time = $_POST['end_time'];
 
-            if (empty($day) || empty($start_time) || empty($end_time)) {
-                throw new Exception("Día, hora de inicio y hora de fin son obligatorios.");
-            }
-
-            // Permitir horarios que crucen medianoche
-            $stmt = $pdo->prepare("SELECT COUNT(*) FROM business_hours WHERE day_of_week = ? AND (
-                (start_time <= ? AND end_time >= ?) OR 
-                (start_time <= ? AND end_time >= ?) OR
-                (start_time >= ? AND end_time <= ?)
-            )");
-            $stmt->execute([$day, $end_time, $start_time, $start_time, $end_time, $start_time, $end_time]);
-            if ($stmt->fetchColumn() > 0) {
-                throw new Exception("El horario se superpone con otro horario existente para el mismo día.");
-            }
-
-            $stmt = $pdo->prepare("INSERT INTO business_hours (day_of_week, start_time, end_time) VALUES (?, ?, ?)");
-            $stmt->execute([$day, $start_time, $end_time]);
-            $success[] = "Horario agregado correctamente.";
-        } elseif ($_POST['action'] === 'update_business_hours') {
-            $id = (int)$_POST['id'];
-            $day = trim($_POST['day_of_week']);
-            $start_time = $_POST['start_time'];
-            $end_time = $_POST['end_time'];
-
-            if (empty($day) || empty($start_time) || empty($end_time)) {
-                throw new Exception("Día, hora de inicio y hora de fin son obligatorios.");
-            }
-
-            // Permitir horarios que crucen medianoche
-            $stmt = $pdo->prepare("SELECT COUNT(*) FROM business_hours WHERE day_of_week = ? AND id != ? AND (
-                (start_time <= ? AND end_time >= ?) OR 
-                (start_time <= ? AND end_time >= ?) OR
-                (start_time >= ? AND end_time <= ?)
-            )");
-            $stmt->execute([$day, $id, $end_time, $start_time, $start_time, $end_time, $start_time, $end_time]);
-            if ($stmt->fetchColumn() > 0) {
-                throw new Exception("El horario se superpone con otro horario existente para el mismo día.");
-            }
-
-            $stmt = $pdo->prepare("UPDATE business_hours SET day_of_week = ?, start_time = ?, end_time = ? WHERE id = ?");
-            $stmt->execute([$day, $start_time, $end_time, $id]);
-            $success[] = "Horario actualizado correctamente.";
-        } elseif ($_POST['action'] === 'delete_business_hours') {
-            $id = (int)$_POST['id'];
-            $stmt = $pdo->prepare("DELETE FROM business_hours WHERE id = ?");
-            $stmt->execute([$id]);
-            $success[] = "Horario eliminado correctamente.";
-        } elseif ($_POST['action'] === 'bulk_update_prices') {
+        } elseif ($action === 'bulk_update_prices') {
             if (!empty($_POST['prices']) && is_array($_POST['prices'])) {
-                // Primero eliminar los marcados
                 if (!empty($_POST['delete_ids']) && is_array($_POST['delete_ids'])) {
-                    $del_stmt = $pdo->prepare("DELETE FROM menu_item_subproducts WHERE parent_item_id = ?");
+                    $del_sub  = $pdo->prepare("DELETE FROM menu_item_subproducts WHERE parent_item_id = ? OR sub_item_id = ?");
+                    $del_var  = $pdo->prepare("DELETE FROM menu_item_variants WHERE item_id = ?");
                     $del_item = $pdo->prepare("DELETE FROM menu_items WHERE id = ?");
+                    $deletedCount = 0;
                     foreach ($_POST['delete_ids'] as $del_id) {
                         $del_id = (int)$del_id;
                         if ($del_id > 0) {
-                            $del_stmt->execute([$del_id]);
+                            $del_sub->execute([$del_id, $del_id]);
+                            $del_var->execute([$del_id]);
                             $del_item->execute([$del_id]);
-                            // Quitar del array de precios para no intentar actualizarlo
                             unset($_POST['prices'][$del_id]);
+                            $deletedCount++;
                         }
                     }
-                    $success[] = count($_POST['delete_ids']) . " producto(s) eliminado(s).";
+                    if ($deletedCount > 0) {
+                        $success[] = "{$deletedCount} producto(s) eliminado(s) junto con sus variantes.";
+                    }
                 }
-                $stmt = $pdo->prepare("UPDATE menu_items SET price = ?, secondary_price = ? WHERE id = ?");
+                $stmt    = $pdo->prepare("UPDATE menu_items SET price = ? WHERE id = ?");
                 $updated = 0;
                 foreach ($_POST['prices'] as $item_id => $price_val) {
-                    $item_id = (int)$item_id;
+                    $item_id   = (int)$item_id;
                     $price_val = (float)$price_val;
                     if ($item_id <= 0 || $price_val <= 0) continue;
-                    $sec = isset($_POST['secondary_prices'][$item_id]) && $_POST['secondary_prices'][$item_id] !== ''
-                        ? (float)$_POST['secondary_prices'][$item_id]
-                        : null;
-                    if ($sec !== null && $sec <= 0) $sec = null;
-                    $stmt->execute([$price_val, $sec, $item_id]);
+                    $stmt->execute([$price_val, $item_id]);
                     $updated++;
                 }
-                $success[] = "Precios actualizados correctamente ($updated productos).";
+                $success[] = "Precios actualizados correctamente ({$updated} productos).";
             } else {
                 $errors[] = "No se recibieron precios para actualizar.";
             }
-        } elseif ($_POST['action'] === 'update_order') {
-            if (!empty($_POST['order']) && is_array($_POST['order'])) {
-                $stmt = $pdo->prepare("UPDATE menu_items SET display_order = ? WHERE id = ?");
-                foreach ($_POST['order'] as $index => $item_id) {
-                    $stmt->execute([(int)$index, (int)$item_id]);
-                }
-                $success[] = "Orden de productos actualizado correctamente.";
-            } else {
-                $errors[] = "No se recibieron datos válidos para actualizar el orden.";
-            }
-        } elseif ($_POST['action'] === 'toggle_visibility') {
-            // AJAX — responde JSON
+
+        } elseif ($action === 'toggle_visibility') {
+            header('Content-Type: application/json; charset=utf-8');
             $id = (int)($_POST['id'] ?? 0);
-            if ($id <= 0) { echo json_encode(['ok'=>false,'error'=>'ID inválido']); exit; }
+            if ($id <= 0) { echo json_encode(['ok' => false, 'error' => 'ID inválido']); exit; }
             $pdo->prepare("UPDATE menu_items SET is_visible = NOT is_visible WHERE id = ?")->execute([$id]);
-            $new = (bool)$pdo->query("SELECT is_visible FROM menu_items WHERE id = $id")->fetchColumn();
-            echo json_encode(['ok'=>true,'is_visible'=>$new]);
+            $stVis = $pdo->prepare("SELECT is_visible FROM menu_items WHERE id = ?");
+            $stVis->execute([$id]);
+            echo json_encode(['ok' => true, 'is_visible' => (bool)$stVis->fetchColumn()]);
             exit;
-        } elseif ($_POST['action'] === 'reorder_items') {
-            // AJAX — responde JSON
-            $order = json_decode($_POST['order'] ?? '[]', true);
-            if (!is_array($order) || empty($order)) { echo json_encode(['ok'=>false,'error'=>'Datos inválidos']); exit; }
+
+        } elseif ($action === 'reorder_items' || $action === 'update_order') {
+            header('Content-Type: application/json; charset=utf-8');
+            $rawOrder = $_POST['order'] ?? '[]';
+            $order = is_array($rawOrder) ? $rawOrder : json_decode((string)$rawOrder, true);
+            if (!is_array($order) || empty($order)) {
+                echo json_encode(['ok' => false, 'error' => 'Datos inválidos']);
+                exit;
+            }
             $stmt = $pdo->prepare("UPDATE menu_items SET display_order = ? WHERE id = ?");
             $pdo->beginTransaction();
             try {
-                foreach ($order as $idx => $itemId) { $stmt->execute([$idx + 1, (int)$itemId]); }
+                foreach (array_values($order) as $idx => $itemId) {
+                    $stmt->execute([$idx + 1, (int)$itemId]);
+                }
                 $pdo->commit();
-                echo json_encode(['ok'=>true]);
-            } catch (Throwable $e) { $pdo->rollBack(); echo json_encode(['ok'=>false,'error'=>$e->getMessage()]); }
+                echo json_encode(['ok' => true]);
+            } catch (Throwable $e) {
+                $pdo->rollBack();
+                echo json_encode(['ok' => false, 'error' => $e->getMessage()]);
+            }
             exit;
-        } elseif ($_POST['action'] === 'reorder_categories') {
-            // AJAX — responde JSON
-            $order = json_decode($_POST['order'] ?? '[]', true);
-            if (!is_array($order) || empty($order)) { echo json_encode(['ok'=>false,'error'=>'Datos inválidos']); exit; }
+
+        } elseif ($action === 'reorder_categories') {
+            header('Content-Type: application/json; charset=utf-8');
+            $order = json_decode((string)($_POST['order'] ?? '[]'), true);
+            if (!is_array($order) || empty($order)) {
+                echo json_encode(['ok' => false, 'error' => 'Datos inválidos']);
+                exit;
+            }
             $stmt = $pdo->prepare("UPDATE categories SET display_order = ? WHERE id = ?");
             $pdo->beginTransaction();
             try {
-                foreach ($order as $idx => $catId) { $stmt->execute([$idx + 1, (int)$catId]); }
+                foreach (array_values($order) as $idx => $catId) {
+                    $stmt->execute([$idx + 1, (int)$catId]);
+                }
                 $pdo->commit();
-                echo json_encode(['ok'=>true]);
-            } catch (Throwable $e) { $pdo->rollBack(); echo json_encode(['ok'=>false,'error'=>$e->getMessage()]); }
+                echo json_encode(['ok' => true]);
+            } catch (Throwable $e) {
+                $pdo->rollBack();
+                echo json_encode(['ok' => false, 'error' => $e->getMessage()]);
+            }
             exit;
-        } elseif ($_POST['action'] === 'update_transfer_settings') {
-            $alias  = trim($_POST['transfer_alias']  ?? '');
-            $holder = trim($_POST['transfer_holder'] ?? '');
+
+        } elseif ($action === 'update_transfer_settings') {
+            $alias  = trim((string)($_POST['transfer_alias']  ?? ''));
+            $holder = trim((string)($_POST['transfer_holder'] ?? ''));
             if ($alias === '' || $holder === '') {
                 $errors[] = "El alias y el titular no pueden quedar vacíos.";
             } else {
                 $up = $pdo->prepare("
                     INSERT INTO site_settings (setting_key, setting_value) VALUES (?, ?)
-                    ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)
+                    ON DUPLICATE KEY UPDATE setting_value = ?
                 ");
-                $up->execute(['transfer_alias',  substr($alias,  0, 190)]);
-                $up->execute(['transfer_holder', substr($holder, 0, 190)]);
+                $a = substr($alias,  0, 190);
+                $h = substr($holder, 0, 190);
+                $up->execute(['transfer_alias',  $a, $a]);
+                $up->execute(['transfer_holder', $h, $h]);
                 $success[] = "Datos de transferencia actualizados.";
             }
+
+        } elseif ($action === 'update_tracking_settings') {
+            $gtmId   = strtoupper(trim((string)($_POST['gtm_id'] ?? '')));
+            $pixelId = trim((string)($_POST['meta_pixel_id'] ?? ''));
+            $ga4Id   = strtoupper(trim((string)($_POST['ga4_id'] ?? '')));
+
+            if ($gtmId !== '' && !preg_match('/^GTM-[A-Z0-9]+$/', $gtmId)) {
+                throw new Exception("El ID de Google Tag Manager debe tener formato GTM-XXXXXXX (o quedar vacío).");
+            }
+            if ($pixelId !== '' && !preg_match('/^\d{8,24}$/', $pixelId)) {
+                throw new Exception("El ID del Pixel de Meta debe contener solo números (ej. 313442609878673).");
+            }
+            if ($ga4Id !== '' && !preg_match('/^G-[A-Z0-9]+$/', $ga4Id)) {
+                throw new Exception("El ID de Google Analytics 4 debe tener formato G-XXXXXXXXXX (o quedar vacío si ya se carga vía GTM).");
+            }
+
+            $up = $pdo->prepare("
+                INSERT INTO site_settings (setting_key, setting_value) VALUES (?, ?)
+                ON DUPLICATE KEY UPDATE setting_value = ?
+            ");
+            $up->execute(['gtm_id',        $gtmId,   $gtmId]);
+            $up->execute(['meta_pixel_id', $pixelId, $pixelId]);
+            $up->execute(['ga4_id',        $ga4Id,   $ga4Id]);
+            $success[] = "Configuración de Meta Pixel y Google Analytics actualizada.";
         }
     } catch (Exception $e) {
-        $errors[] = "Error: " . $e->getMessage();
-        file_put_contents('error_log.txt', "Error: " . $e->getMessage() . "\n", FILE_APPEND);
+        $errors[] = $e->getMessage();
+        error_log('editor.php error: ' . $e->getMessage());
     }
 }
 
-// Asegurar que la categoría 'Extras' y sus productos existan en la BD para que puedan ser administrados desde este editor
-if (!function_exists('getOrCreateExtrasFromDB')) {
-function getOrCreateExtrasFromDB(PDO $pdo): void {
-    try {
-        $stmt = $pdo->prepare("SELECT id FROM categories WHERE LOWER(TRIM(name)) = 'extras' LIMIT 1");
-        $stmt->execute();
-        $catId = $stmt->fetchColumn();
-
-        if (!$catId) {
-            $maxOrder = (int)$pdo->query("SELECT COALESCE(MAX(display_order), 0) FROM categories")->fetchColumn();
-            $insCat = $pdo->prepare("INSERT INTO categories (name, display_order) VALUES ('Extras', ?)");
-            $insCat->execute([$maxOrder + 1]);
-            $catId = (int)$pdo->lastInsertId();
-        }
-
-        $itemsStmt = $pdo->prepare("SELECT id, name FROM menu_items WHERE category_id = ?");
-        $itemsStmt->execute([$catId]);
-        $items = $itemsStmt->fetchAll(PDO::FETCH_ASSOC);
-
-        if (empty($items)) {
-            $initialExtras = [
-                ['name' => 'Stracciatella',   'price' => 5000.00, 'order' => 1],
-                ['name' => 'Anchoas',         'price' => 3000.00, 'order' => 2],
-                ['name' => 'Dip aceite oliva', 'price' => 1500.00, 'order' => 3],
-            ];
-            $insItem = $pdo->prepare("
-                INSERT INTO menu_items (name, price, category_id, is_visible, display_order, description)
-                VALUES (?, ?, ?, 1, ?, 'Extra para sumar a tu pizza')
-            ");
-            foreach ($initialExtras as $ie) {
-                $insItem->execute([$ie['name'], $ie['price'], $catId, $ie['order']]);
-            }
-        } else {
-            foreach ($items as $it) {
-                if (trim($it['name']) === 'Dip de aceite de oliva') {
-                    $pdo->prepare("UPDATE menu_items SET name = 'Dip aceite oliva' WHERE id = ?")->execute([$it['id']]);
-                }
-            }
-        }
-    } catch (Throwable $e) {
-        error_log("Error in getOrCreateExtrasFromDB (editor): " . $e->getMessage());
+// ── Sembrar categoría 'Extras' solo si todavía no existe en absoluto ─────────
+try {
+    $stmtExt = $pdo->query("SELECT id FROM categories WHERE LOWER(TRIM(name)) = 'extras' LIMIT 1");
+    if (!$stmtExt->fetchColumn()) {
+        $maxOrder = (int)$pdo->query("SELECT COALESCE(MAX(display_order), 0) FROM categories")->fetchColumn();
+        $insCat   = $pdo->prepare("INSERT INTO categories (name, display_order) VALUES ('Extras', ?)");
+        $insCat->execute([$maxOrder + 1]);
+        $catId = (int)$pdo->lastInsertId();
+        $insItem = $pdo->prepare("
+            INSERT INTO menu_items (name, price, category_id, is_visible, display_order, description)
+            VALUES (?, ?, ?, 1, ?, 'Extra para sumar a tu pizza')
+        ");
+        $insItem->execute(['Stracciatella',   5000.00, $catId, 1]);
+        $insItem->execute(['Anchoas',         3000.00, $catId, 2]);
+        $insItem->execute(['Dip aceite oliva', 1500.00, $catId, 3]);
     }
-}}
-getOrCreateExtrasFromDB($pdo);
+} catch (Throwable $e) {
+    error_log("Extras seed check: " . $e->getMessage());
+}
 
-// Fetch all categories
-$categories_stmt = $pdo->query("SELECT * FROM categories ORDER BY display_order");
-$categories = $categories_stmt->fetchAll();
+// ── Consultas de lectura para renderizar el editor ──────────────────────────
+$categories = $pdo->query("SELECT * FROM categories ORDER BY display_order")->fetchAll(PDO::FETCH_ASSOC);
 
-// Fetch all menu items, grouped by category
 $menu_items_by_category = [];
-$stmt = $pdo->query("
+$menu_items = $pdo->query("
     SELECT mi.*, c.name AS category_name
     FROM menu_items mi
     JOIN categories c ON mi.category_id = c.id
     ORDER BY c.display_order, mi.display_order
-");
-$menu_items = $stmt->fetchAll();
+")->fetchAll(PDO::FETCH_ASSOC);
 foreach ($menu_items as $item) {
     $menu_items_by_category[$item['category_id']][] = $item;
 }
 
-// Fetch sub-products with required flag — una sola query
-$sub_products = [];
-if (!empty($menu_items)) {
-    $ids = array_column($menu_items, 'id');
-    $placeholders = implode(',', array_fill(0, count($ids), '?'));
-    $stmt = $pdo->prepare("
-        SELECT ms.parent_item_id, mi.id, mi.name, ms.quantity, ms.is_required
-        FROM menu_item_subproducts ms
-        JOIN menu_items mi ON ms.sub_item_id = mi.id
-        WHERE ms.parent_item_id IN ($placeholders)
-        ORDER BY ms.parent_item_id
-    ");
-    $stmt->execute($ids);
-    foreach ($stmt->fetchAll() as $row) {
-        $sub_products[$row['parent_item_id']][] = $row;
-    }
-}
-
-// Fetch variantes con precio propio por item — para precargar el form de edición.
 $variants = [];
 if (!empty($menu_items)) {
     $ids = array_column($menu_items, 'id');
@@ -852,894 +724,282 @@ if (!empty($menu_items)) {
     }
 }
 
-// Fetch business hours
-$business_hours_stmt = $pdo->query("SELECT * FROM business_hours ORDER BY FIELD(day_of_week, 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'), start_time");
-$business_hours = $business_hours_stmt->fetchAll();
+$business_hours = $pdo->query("
+    SELECT * FROM business_hours
+    ORDER BY FIELD(day_of_week, 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'), start_time
+")->fetchAll(PDO::FETCH_ASSOC);
 
-// Ajustes del sitio para el formulario (datos de transferencia)
 $transfer_alias  = getSetting($pdo, 'transfer_alias',  'RRBBPIZZA');
 $transfer_holder = getSetting($pdo, 'transfer_holder', 'Ezequiel Urquidi');
+$gtm_id          = getSetting($pdo, 'gtm_id',          'GTM-5JWLLKC7');
+$meta_pixel_id   = getSetting($pdo, 'meta_pixel_id',   '313442609878673');
+$ga4_id          = getSetting($pdo, 'ga4_id',          '');
 
-// Days of the week
 $days_of_week = [
-    'Lunes' => 'L',
-    'Martes' => 'M',
+    'Lunes'     => 'L',
+    'Martes'    => 'M',
     'Miércoles' => 'X',
-    'Jueves' => 'J',
-    'Viernes' => 'V',
-    'Sábado' => 'S',
-    'Domingo' => 'D'
+    'Jueves'    => 'J',
+    'Viernes'   => 'V',
+    'Sábado'    => 'S',
+    'Domingo'   => 'D',
 ];
 ?>
-
 <!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex, nofollow">
     <title>Editor de Menú - Pizzería Arrabbiata</title>
     <link rel="icon" type="image/png" href="/favicon.png"/>
-    <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cropperjs@1.6.2/dist/cropper.min.css">
     <script src="https://cdn.jsdelivr.net/npm/cropperjs@1.6.2/dist/cropper.min.js"></script>
     <style>
-        /* ── Modal de recorte ── */
         #crop-modal {
-            display: none;
-            position: fixed;
-            inset: 0;
-            background: rgba(0,0,0,0.75);
-            z-index: 2000;
-            justify-content: center;
-            align-items: center;
+            display: none; position: fixed; inset: 0;
+            background: rgba(0,0,0,0.75); z-index: 2000;
+            justify-content: center; align-items: center;
         }
         #crop-modal.open { display: flex; }
         #crop-modal-inner {
-            background: #fff;
-            border-radius: 12px;
-            padding: 20px;
-            max-width: 520px;
-            width: 94%;
-            display: flex;
-            flex-direction: column;
-            gap: 14px;
+            background: #fff; border-radius: 12px; padding: 20px;
+            max-width: 520px; width: 94%; display: flex; flex-direction: column; gap: 14px;
         }
         #crop-modal-inner h4 {
-            margin: 0;
-            font-family: 'Alberdini', 'Alberdi', serif;
-            font-size: 1.4rem;
-            color: var(--rojo, #CC1414);
+            margin: 0; font-family: 'Alberdini', 'Alberdi', serif;
+            font-size: 1.4rem; color: var(--rojo, #CC1414);
         }
-        #crop-container {
-            width: 100%;
-            max-height: 380px;
-            overflow: hidden;
-            background: #111;
-            border-radius: 8px;
-        }
-        #crop-container img {
-            display: block;
-            max-width: 100%;
-        }
-        #crop-modal-actions {
-            display: flex;
-            gap: 10px;
-            justify-content: flex-end;
-        }
+        #crop-container { width: 100%; max-height: 380px; overflow: hidden; background: #111; border-radius: 8px; }
+        #crop-container img { display: block; max-width: 100%; }
+        #crop-modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
         #crop-modal-actions button {
-            padding: 9px 22px;
-            border-radius: 25px;
-            border: none;
-            cursor: pointer;
-            font-weight: 600;
-            font-size: 0.95rem;
+            padding: 9px 22px; border-radius: 25px; border: none;
+            cursor: pointer; font-weight: 600; font-size: 0.95rem;
         }
         #btn-crop-confirm { background: #CC1414; color: #fff; }
         #btn-crop-cancel  { background: #ddd; color: #333; }
         #btn-crop-confirm:hover { background: #D73828; }
         #btn-crop-cancel:hover  { background: #bbb; }
         .crop-preview-thumb {
-            width: 60px; height: 60px;
-            object-fit: cover;
-            border-radius: 6px;
-            border: 2px solid #cc0000;
-            display: inline-block;
-            vertical-align: middle;
-            margin-left: 8px;
+            width: 60px; height: 60px; object-fit: cover; border-radius: 6px;
+            border: 2px solid #cc0000; display: inline-block; vertical-align: middle; margin-left: 8px;
         }
-    </style>
-    <style>
-        /* ============================================================
-           ESTILO EDITOR — alineado al lenguaje visual del sitio.
-           Paleta del local: ocre, azul eléctrico, rojo cartel.
-           ============================================================ */
+
         @font-face {
             font-family: 'Alberdini';
-            src: url('rrbb.woff2') format('woff2'),
-                 url('rrbb.woff') format('woff');
-            font-weight: normal;
-            font-style: normal;
+            src: url('rrbb.woff2') format('woff2'), url('rrbb.woff') format('woff');
+            font-weight: normal; font-style: normal;
         }
         @font-face {
             font-family: 'Alberdi';
-            src: url('dk.woff2') format('woff2'),
-                 url('dk.woff') format('woff');
-            font-weight: normal;
-            font-style: normal;
+            src: url('dk.woff2') format('woff2'), url('dk.woff') format('woff');
+            font-weight: normal; font-style: normal;
         }
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,500;0,9..40,700&display=swap');
 
         :root {
-            --ocre:        #D4B483;
-            --ocre-d:      #B8955A;
-            --azul-elec:   #1A5FBF;
-            --azul-barra:  #2F7BD6;
-            --azul-barra-d:#1A5FAA;
-            --rojo:        #CC1414;
-            --rojo-d:      #A50E0E;
-            --rojo-f:      #D73828;
-            --blanco:      #F8F6F2;
-            --crema:       #F0E6D0;
-            --marron:      #2b1a0a;
-            --amarillo:    #FDB740;
-            --verde-wa:    #25D366;
-            --verde-wa-d:  #128C7E;
-            --radius:      10px;
-            --font-display:'Alberdini', 'DM Serif Display', serif;
-            --font-body:   'DM Sans', Arial, sans-serif;
+            --ocre: #D4B483; --ocre-d: #B8955A; --azul-elec: #1A5FBF;
+            --azul-barra: #2F7BD6; --azul-barra-d: #1A5FAA;
+            --rojo: #CC1414; --rojo-d: #A50E0E; --rojo-f: #D73828;
+            --blanco: #F8F6F2; --crema: #F0E6D0; --marron: #2b1a0a;
+            --amarillo: #FDB740; --verde-wa: #25D366; --verde-wa-d: #128C7E;
+            --radius: 10px;
+            --font-display: 'Alberdini', 'DM Serif Display', serif;
+            --font-body: 'DM Sans', Arial, sans-serif;
         }
 
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        html {
-            scroll-behavior: smooth;
-            overflow-x: hidden;
-        }
-
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html { scroll-behavior: smooth; overflow-x: hidden; }
         body {
-            overflow-x: hidden;
-            background: var(--crema);
-            font-family: var(--font-body);
-            color: var(--marron);
+            overflow-x: hidden; background: var(--crema);
+            font-family: var(--font-body); color: var(--marron);
             -webkit-font-smoothing: antialiased;
         }
 
         .nav-menu {
-            position: fixed;
-            top: 20px;
-            left: 50%;
-            transform: translateX(-50%);
-            z-index: 10000;
-            background: var(--ocre);
-            border: 3px solid var(--azul-elec);
-            border-radius: 4px;
-            padding: 8px 22px;
-            box-shadow: 4px 4px 0 var(--azul-elec);
-            display: inline-block;
-            transition: all .2s ease;
+            position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+            z-index: 10000; background: var(--ocre); border: 3px solid var(--azul-elec);
+            border-radius: 4px; padding: 8px 22px; box-shadow: 4px 4px 0 var(--azul-elec);
+            display: inline-block; transition: all .2s ease;
         }
-
-        .nav-menu ul {
-            list-style: none;
-            display: flex;
-            gap: 4px;
-            margin: 0;
-        }
-
+        .nav-menu ul { list-style: none; display: flex; gap: 4px; margin: 0; }
         .nav-menu a {
-            text-decoration: none;
-            color: var(--marron);
-            font-family: var(--font-display);
-            font-size: 21px;
-            font-weight: normal;
-            padding: 6px 14px;
-            border-radius: 2px;
-            letter-spacing: .03em;
-            transition: all .2s ease;
+            text-decoration: none; color: var(--marron); font-family: var(--font-display);
+            font-size: 21px; padding: 6px 14px; border-radius: 2px; letter-spacing: .03em; transition: all .2s ease;
         }
-
-        .nav-menu a:hover {
-            background: var(--rojo);
-            color: #fff;
-            transform: translateY(-1px);
-        }
+        .nav-menu a:hover { background: var(--rojo); color: #fff; transform: translateY(-1px); }
 
         .section {
-            width: 100%;
-            padding: 110px 20px 40px;
-            background:
-                repeating-linear-gradient(
-                    45deg,
-                    var(--ocre) 0 22px,
-                    var(--ocre-d) 22px 44px
-                );
+            width: 100%; padding: 110px 20px 40px;
+            background: repeating-linear-gradient(45deg, var(--ocre) 0 22px, var(--ocre-d) 22px 44px);
             min-height: 100vh;
         }
-
         .editor-container {
-            max-width: 860px;
-            margin: 0 auto;
-            background: var(--blanco);
-            border: 3px solid var(--azul-elec);
-            border-radius: var(--radius);
-            padding: 34px 30px;
-            box-shadow: 6px 6px 0 var(--azul-elec);
+            max-width: 880px; margin: 0 auto; background: var(--blanco);
+            border: 3px solid var(--azul-elec); border-radius: var(--radius);
+            padding: 34px 30px; box-shadow: 6px 6px 0 var(--azul-elec);
         }
-
         .editor-container h2 {
-            text-align: center;
-            font-size: 2.6rem;
-            margin-bottom: 34px;
-            color: var(--rojo);
-            font-family: var(--font-display);
-            font-weight: normal;
-            letter-spacing: .02em;
-            text-shadow: 2px 2px 0 var(--ocre);
+            text-align: center; font-size: 2.6rem; margin-bottom: 28px;
+            color: var(--rojo); font-family: var(--font-display); font-weight: normal;
+            letter-spacing: .02em; text-shadow: 2px 2px 0 var(--ocre);
         }
 
         details {
-            margin-bottom: 20px;
-            background: var(--crema);
-            border: 2px solid var(--azul-elec);
-            border-radius: var(--radius);
-            box-shadow: 3px 3px 0 var(--azul-barra);
-            transition: all 0.2s ease;
-            overflow: hidden;
+            margin-bottom: 20px; background: var(--crema);
+            border: 2px solid var(--azul-elec); border-radius: var(--radius);
+            box-shadow: 3px 3px 0 var(--azul-barra); overflow: hidden;
         }
-
         details summary {
-            padding: 15px 18px;
-            font-size: 1.35rem;
-            color: var(--marron);
-            font-family: var(--font-display);
-            font-weight: normal;
-            cursor: pointer;
-            border-bottom: 2px solid var(--azul-elec);
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            list-style: none;
+            padding: 15px 18px; font-size: 1.35rem; color: var(--marron);
+            font-family: var(--font-display); cursor: pointer;
+            border-bottom: 2px solid var(--azul-elec); text-transform: uppercase;
+            letter-spacing: 1px; list-style: none;
         }
-
         details summary::-webkit-details-marker { display: none; }
+        details summary:hover, details[open] summary { background-color: var(--rojo); color: #fff; }
 
-        details summary:hover {
-            background-color: var(--rojo);
-            color: #fff;
-        }
-
-        details[open] summary {
-            background-color: var(--rojo);
-            color: #fff;
-        }
-
-        .editor-form {
-            padding: 20px;
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-        }
-
-        .editor-form input:not([type="url"]):not([type="file"]),
+        .editor-form { padding: 20px; display: flex; flex-direction: column; gap: 10px; }
+        .editor-form input:not([type="url"]):not([type="file"]):not([type="checkbox"]),
         .editor-form select,
-        .modal-form input:not([type="url"]):not([type="file"]),
+        .modal-form input:not([type="url"]):not([type="file"]):not([type="checkbox"]),
         .modal-form select {
-            width: 100%;
-            max-width: 30%;
-            padding: 11px 14px;
-            margin: 10px 0;
-            border: 2px solid var(--ocre-d);
-            border-radius: 6px;
-            font-size: 16px;
-            font-family: var(--font-body);
-            color: var(--marron);
-            background: #fff;
-            transition: border-color 0.2s ease, box-shadow 0.2s ease;
+            width: 100%; max-width: 340px; padding: 10px 14px; margin: 6px 0;
+            border: 2px solid var(--ocre-d); border-radius: 6px; font-size: 15px;
+            font-family: var(--font-body); color: var(--marron); background: #fff;
         }
-
-        .editor-form textarea,
-        .editor-form input[type="url"],
-        .modal-form textarea,
-        .modal-form input[type="url"] {
-            width: 100%;
-            max-width: 60%;
-            padding: 11px 14px;
-            margin: 10px 0;
-            border: 2px solid var(--ocre-d);
-            border-radius: 6px;
-            font-size: 16px;
-            font-family: var(--font-body);
-            color: var(--marron);
-            background: #fff;
-            transition: border-color 0.2s ease, box-shadow 0.2s ease;
+        .editor-form textarea, .editor-form input[type="url"],
+        .modal-form textarea, .modal-form input[type="url"] {
+            width: 100%; max-width: 560px; padding: 10px 14px; margin: 6px 0;
+            border: 2px solid var(--ocre-d); border-radius: 6px; font-size: 15px;
+            font-family: var(--font-body); color: var(--marron); background: #fff;
         }
-
-        .editor-form input:focus,
-        .editor-form select:focus,
-        .editor-form textarea:focus,
-        .modal-form input:focus,
-        .modal-form select:focus,
-        .modal-form textarea:focus {
-            border-color: var(--azul-elec);
-            outline: none;
-            box-shadow: 0 0 0 3px rgba(26, 95, 191, 0.18);
+        .editor-form input:focus, .editor-form select:focus, .editor-form textarea:focus,
+        .modal-form input:focus, .modal-form select:focus, .modal-form textarea:focus {
+            border-color: var(--azul-elec); outline: none; box-shadow: 0 0 0 3px rgba(26, 95, 191, 0.18);
         }
-
-        .editor-form input[type="file"],
-        .modal-form input[type="file"] {
-            width: 100%;
-            max-width: 30%;
-            padding: 12px 0;
-            margin: 10px 0;
+        .editor-form label, .modal-form label {
+            font-size: 0.95rem; color: var(--marron); font-weight: 700; margin: 6px 0 2px; display: inline-block;
         }
+        .editor-form p.note, .modal-form p.note { font-size: 0.88rem; color: #6b5a45; margin: 4px 0; line-height: 1.4; }
 
-        .editor-form label,
-        .modal-form label {
-            font-size: 1rem;
-            color: var(--marron);
-            font-weight: 700;
-            margin: 10px 5px;
-            display: inline-block;
-            font-family: var(--font-body);
+        .toggle-group { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; margin: 10px 0; }
+        .toggle-inputs { display: flex; flex-direction: column; gap: 6px; }
+        .days-selector, .toggle-selector { display: flex; gap: 10px; flex-wrap: wrap; }
+        .day-toggle, .option-toggle {
+            width: 40px; height: 40px; border-radius: 50%;
+            background-color: var(--crema); color: var(--marron);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 15px; font-weight: 700; cursor: pointer; user-select: none;
+            transition: all 0.18s ease; border: 2px solid var(--ocre-d);
         }
+        .day-toggle.active, .option-toggle.active { background-color: var(--rojo); color: #fff; border-color: var(--rojo-d); }
+        .day-toggle:hover, .option-toggle:hover { background-color: var(--rojo-f); color: #fff; border-color: var(--rojo-d); }
 
-        .editor-form p.note,
-        .modal-form p.note {
-            font-size: 0.9rem;
-            color: #6b5a45;
-            margin: 5px 0;
+        .editor-form button, .modal-form button {
+            background: var(--rojo); color: #fff; border: 2px solid var(--rojo-d);
+            padding: 10px 22px; border-radius: 6px; cursor: pointer;
+            font-size: 15px; font-weight: 700; font-family: var(--font-body);
+            align-self: flex-start; box-shadow: 3px 3px 0 var(--rojo-d); transition: all 0.15s ease;
         }
-
-        .toggle-group {
-            display: flex;
-            gap: 20px;
-            align-items: center;
-            margin: 10px 0;
-        }
-
-        .days-inputs,
-        .time-inputs,
-        .sub-items-inputs,
-        .toggle-inputs {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-            margin: 10px 0;
-            flex-direction: column;
-        }
-
-        .days-selector,
-        .toggle-selector {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-        }
-
-        .day-toggle,
-        .option-toggle {
-            width: 40px;
-            height: 40px;
-            border-radius: 50%;
-            background-color: var(--crema);
-            color: var(--marron);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 16px;
-            font-weight: 700;
-            cursor: pointer;
-            user-select: none;
-            transition: all 0.2s ease;
-            border: 2px solid var(--ocre-d);
-        }
-
-        .day-toggle.active,
-        .option-toggle.active {
-            background-color: var(--rojo);
-            color: white;
-            border-color: var(--rojo-d);
-        }
-
-        .day-toggle:hover,
-        .option-toggle:hover {
-            background-color: var(--rojo-f);
-            color: white;
-            border-color: var(--rojo-d);
-        }
-
-        .day-toggle:focus,
-        .option-toggle:focus {
-            outline: none;
-            box-shadow: 0 0 0 3px rgba(204, 20, 20, 0.3);
-        }
-
-        .sub-item {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-            align-items: center;
-            width: 100%;
-        }
-
-        .sub-item select,
-        .sub-item input[type="number"],
-        .sub-item input[type="checkbox"] {
-            flex: 1;
-            max-width: 30%;
-            min-width: 120px;
-        }
-
-        .sub-item input[type="checkbox"] {
-            max-width: 50px;
-        }
-
-        .sub-item label {
-            font-size: 0.9rem;
-            color: var(--marron);
-            font-weight: 700;
-            margin: 10px 5px;
-        }
-
-        .sub-item .required-label {
-            color: var(--rojo);
-            font-weight: bold;
-        }
-
-        .editor-form button,
-        .modal-form button {
-            background: var(--rojo);
-            color: white;
-            border: 2px solid var(--rojo-d);
-            padding: 12px 24px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 16px;
-            font-weight: 700;
-            font-family: var(--font-body);
-            letter-spacing: .02em;
-            align-self: flex-start;
-            max-width: none;
-            box-shadow: 3px 3px 0 var(--rojo-d);
-            transition: all 0.15s ease;
-        }
-
-        .editor-form button:hover,
-        .modal-form button:hover {
-            background: var(--rojo-f);
-            transform: translate(-1px, -1px);
-            box-shadow: 4px 4px 0 var(--rojo-d);
-        }
-
-        .editor-form button:active,
-        .modal-form button:active {
-            transform: translate(2px, 2px);
-            box-shadow: 1px 1px 0 var(--rojo-d);
+        .editor-form button:hover, .modal-form button:hover {
+            background: var(--rojo-f); transform: translate(-1px, -1px); box-shadow: 4px 4px 0 var(--rojo-d);
         }
 
         .item-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-            gap: 20px;
-            padding: 20px;
+            display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+            gap: 16px; padding: 20px;
         }
-
         .item-card {
-            background: #fff;
-            border: 2px solid var(--azul-elec);
-            border-radius: var(--radius);
-            overflow: hidden;
-            box-shadow: 3px 3px 0 var(--azul-barra);
+            background: #fff; border: 2px solid var(--azul-elec); border-radius: var(--radius);
+            overflow: hidden; box-shadow: 3px 3px 0 var(--azul-barra);
             transition: transform 0.15s ease, box-shadow 0.15s ease;
-            cursor: move;
-            position: relative;
+            cursor: pointer; position: relative; display: flex; flex-direction: column;
         }
-
-        .item-card:hover {
-            transform: translate(-2px, -2px);
-            box-shadow: 5px 5px 0 var(--azul-barra);
-        }
-
-        .item-card img {
-            width: 100%;
-            height: 100px;
-            object-fit: cover;
-        }
-
-        .item-card h3 {
-            font-size: 1rem;
-            color: var(--marron);
-            margin: 10px;
-            font-family: var(--font-display);
-            font-weight: normal;
-            text-align: center;
-        }
+        .item-card.is-hidden-item { opacity: 0.55; }
+        .item-card:hover { transform: translate(-2px, -2px); box-shadow: 5px 5px 0 var(--azul-barra); }
+        .item-card img { width: 100%; height: 105px; object-fit: cover; }
+        .item-card h3 { font-size: 1rem; color: var(--marron); margin: 8px 8px 4px; font-family: var(--font-display); font-weight: normal; text-align: center; }
+        .item-card-badges { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; padding: 0 6px 8px; }
+        .mini-badge { font-size: 0.68rem; font-weight: 700; padding: 2px 6px; border-radius: 99px; }
+        .mini-badge.dest { background: #fee2e2; color: #b91c1c; }
+        .mini-badge.sec  { background: #ede9fe; color: #6d28d9; }
+        .mini-badge.veg  { background: #dcfce7; color: #15803d; }
+        .mini-badge.hid  { background: #e5e7eb; color: #374151; }
+        .mini-badge.cat  { background: #f7efdf; color: #6b5a45; }
 
         .modal {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(43, 26, 10, 0.65);
-            z-index: 1000;
-            justify-content: center;
-            align-items: center;
-            overflow-y: auto;
+            display: none; position: fixed; inset: 0;
+            background: rgba(43, 26, 10, 0.65); z-index: 1000;
+            justify-content: center; align-items: center; overflow-y: auto;
         }
-
         .modal-content {
-            background: var(--blanco);
-            border: 3px solid var(--azul-elec);
-            border-radius: var(--radius);
-            padding: 24px;
-            max-width: 600px;
-            width: 90%;
-            position: relative;
-            box-shadow: 6px 6px 0 var(--azul-elec);
-            max-height: 80vh;
-            overflow-y: auto;
+            background: var(--blanco); border: 3px solid var(--azul-elec);
+            border-radius: var(--radius); padding: 24px; max-width: 640px; width: 92%;
+            position: relative; box-shadow: 6px 6px 0 var(--azul-elec);
+            max-height: 86vh; overflow-y: auto;
         }
-
         .modal-close {
-            position: absolute;
-            top: 10px;
-            right: 14px;
-            font-size: 1.6rem;
-            cursor: pointer;
-            color: var(--marron);
-            line-height: 1;
+            position: absolute; top: 10px; right: 14px; font-size: 1.7rem;
+            cursor: pointer; color: var(--marron); line-height: 1;
+        }
+        .modal-close:hover { color: var(--rojo); }
+        .modal-content img.current-item-img {
+            max-width: 100%; max-height: 180px; object-fit: contain;
+            border-radius: 8px; margin-bottom: 12px; display: block;
         }
 
-        .modal-close:hover {
-            color: var(--rojo);
-        }
-
-        .modal-content img {
-            max-width: 100%;
-            height: auto;
-            max-height: 200px;
-            object-fit: contain;
-            border-radius: 8px;
-            margin-bottom: 15px;
-            display: block;
-        }
-
-        .category-list {
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 20px;
-            padding: 20px;
-        }
-
-        .category-item {
-            background: #fff;
-            border: 2px solid var(--ocre-d);
-            border-radius: var(--radius);
-            padding: 20px;
-            box-shadow: 3px 3px 0 var(--ocre-d);
-            transition: transform 0.15s ease;
-        }
-
-        .category-item:hover {
-            transform: translate(-2px, -2px);
-        }
-
-        .category-item input,
-        .category-item button {
-            margin-bottom: 10px;
-        }
-
+        .category-list { display: grid; grid-template-columns: 1fr; gap: 16px; padding: 20px; }
         .error {
-            color: #fff;
-            background: var(--rojo);
-            border: 2px solid var(--rojo-d);
-            border-radius: 6px;
-            font-size: 1rem;
-            margin: 10px 0;
-            padding: 10px 14px;
-            text-align: center;
-            font-weight: 600;
+            color: #fff; background: var(--rojo); border: 2px solid var(--rojo-d);
+            border-radius: 6px; font-size: 0.96rem; margin: 10px 0; padding: 10px 14px;
+            text-align: center; font-weight: 600;
         }
-
         .success {
-            color: #fff;
-            background: var(--verde-wa-d);
-            border: 2px solid #0e6e5f;
-            border-radius: 6px;
-            font-size: 1rem;
-            margin: 10px 0;
-            padding: 10px 14px;
-            text-align: center;
-            font-weight: 600;
+            color: #fff; background: var(--verde-wa-d); border: 2px solid #0e6e5f;
+            border-radius: 6px; font-size: 0.96rem; margin: 10px 0; padding: 10px 14px;
+            text-align: center; font-weight: 600;
         }
 
-        .hours-table-container {
-            overflow-x: auto;
-        }
-
+        .hours-table-container { overflow-x: auto; padding: 0 20px 20px; }
         .hours-table {
-            width: 100%;
-            max-width: 100%;
-            border-collapse: collapse;
-            margin: 20px 0;
-            table-layout: fixed;
-            background: #fff;
-            border: 2px solid var(--azul-elec);
-            border-radius: var(--radius);
-            overflow: hidden;
+            width: 100%; border-collapse: collapse; margin: 12px 0;
+            background: #fff; border: 2px solid var(--azul-elec); border-radius: var(--radius); overflow: hidden;
         }
-
         .hours-table th, .hours-table td {
-            border: 1px solid var(--ocre-d);
-            padding: 6px;
-            text-align: left;
-            font-size: 13px;
-            word-wrap: break-word;
+            border: 1px solid var(--ocre-d); padding: 8px; text-align: left; font-size: 13px; vertical-align: middle;
         }
-
-        .hours-table th {
-            background-color: var(--azul-elec);
-            color: white;
-            font-family: var(--font-display);
-            font-weight: normal;
-            letter-spacing: .03em;
-        }
-
-        .hours-table td form {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 5px;
-            align-items: center;
-        }
-
+        .hours-table th { background-color: var(--azul-elec); color: #fff; font-family: var(--font-display); font-weight: normal; letter-spacing: .03em; }
+        .hours-table td form { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
         .hours-table select, .hours-table input[type="time"] {
-            padding: 5px;
-            border-radius: 5px;
-            border: 1px solid var(--ocre-d);
-            font-size: 12px;
-            max-width: 100px;
+            padding: 6px 8px; border-radius: 5px; border: 1px solid var(--ocre-d); font-size: 13px; max-width: 125px;
+        }
+        .hours-table button { padding: 6px 10px; font-size: 12px; }
+        .midnight-badge {
+            display: inline-block; background: #dbeafe; color: #1e40af;
+            border: 1px solid #93c5fd; border-radius: 99px; font-size: 0.72rem;
+            font-weight: 700; padding: 2px 8px; margin-top: 3px;
         }
 
-        .hours-table button {
-            padding: 5px 8px;
-            font-size: 11px;
-        }
-
-        /* Campo de texto destacado (pizza de la semana) */
         .weekly-special-text {
-            width: 100%;
-            max-width: 60%;
-            padding: 11px 14px;
-            margin: 10px 0;
-            border: 2px solid var(--ocre-d);
-            border-radius: 6px;
-            font-size: 16px;
-            font-family: var(--font-body);
-            color: var(--marron);
-            background: #fff;
-            transition: border-color 0.2s ease, box-shadow 0.2s ease;
-        }
-
-        .weekly-special-text:focus {
-            border-color: var(--azul-elec);
-            outline: none;
-            box-shadow: 0 0 0 3px rgba(26, 95, 191, 0.18);
-        }
-
-        @media (max-width: 768px) {
-            .nav-menu {
-                top: 20px;
-                padding: 8px 15px;
-            }
-
-            .nav-menu ul {
-                gap: 10px;
-            }
-
-            .nav-menu a {
-                font-size: 14px;
-                padding: 6px 12px;
-            }
-
-            .section {
-                padding: 15px;
-            }
-
-            .editor-container {
-                padding: 20px;
-            }
-
-            .editor-container h2 {
-                padding-top: 60px;
-            }
-
-            .editor-form input,
-            .editor-form select,
-            .editor-form textarea,
-            .modal-form input,
-            .modal-form select,
-            .modal-form textarea,
-            .sub-item select,
-            .sub-item input[type="number"],
-            .sub-item input[type="checkbox"],
-            .hours-table select,
-            .hours-table input[type="time"],
-            .weekly-special-text {
-                max-width: 100%;
-                min-width: unset;
-                font-size: 12px;
-                padding: 8px;
-            }
-
-            .hours-table th, .hours-table td {
-                font-size: 11px;
-                padding: 4px;
-            }
-
-            .hours-table select, .hours-table input[type="time"] {
-                max-width: 80px;
-                font-size: 11px;
-            }
-
-            .hours-table button {
-                padding: 4px 6px;
-                font-size: 10px;
-            }
-
-            .days-selector,
-            .toggle-selector {
-                justify-content: space-between;
-            }
-
-            .day-toggle,
-            .option-toggle {
-                width: 35px;
-                height: 35px;
-                font-size: 14px;
-            }
-
-            .sub-item {
-                flex-direction: column;
-                align-items: stretch;
-            }
-
-            .sub-item select,
-            .sub-item input[type="number"],
-            .sub-item input[type="checkbox"],
-            .sub-item button {
-                width: 100%;
-                max-width: none;
-                min-width: unset;
-            }
-
-            .toggle-group {
-                flex-direction: column;
-                align-items: flex-start;
-            }
-
-            .hours-table td form {
-                flex-direction: column;
-                align-items: stretch;
-            }
-
-            .item-grid {
-                grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
-            }
-
-            .item-card img {
-                height: 80px;
-            }
-
-            .item-card h3 {
-                font-size: 0.9rem;
-            }
-
-            .modal-content {
-                width: 95%;
-                padding: 15px;
-            }
-
-            .modal-content img {
-                max-height: 150px;
-            }
-        }
-
-        @media (max-width: 480px) {
-            .nav-menu {
-                width: 90%;
-                padding: 6px 10px;
-            }
-
-            .nav-menu a {
-                font-size: 12px;
-                padding: 5px 8px;
-            }
-
-            .editor-container h2,
-            details summary {
-                font-size: 1.3rem;
-            }
-
-            .editor-form input,
-            .editor-form select,
-            .editor-form textarea,
-            .modal-form input,
-            .modal-form select,
-            .modal-form textarea,
-            .weekly-special-text {
-                font-size: 12px;
-                padding: 8px;
-            }
-
-            .editor-form button,
-            .modal-form button {
-                padding: 8px 12px;
-                font-size: 12px;
-            }
-
-            .day-toggle,
-            .option-toggle {
-                width: 30px;
-                height: 30px;
-                font-size: 12px;
-            }
-
-            .hours-table th, .hours-table td {
-                font-size: 10px;
-                padding: 3px;
-            }
-
-            .hours-table select, .hours-table input[type="time"] {
-                max-width: 70px;
-                font-size: 10px;
-            }
-
-            .hours-table button {
-                padding: 3px 5px;
-                font-size: 9px;
-            }
-
-            .item-grid {
-                grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
-            }
-
-            .item-card img {
-                height: 60px;
-            }
-
-            .item-card h3 {
-                font-size: 0.8rem;
-            }
-
-            .modal-content {
-                padding: 10px;
-            }
-
-            .modal-content img {
-                max-height: 120px;
-            }
+            width: 100%; max-width: 420px; padding: 10px 14px; margin: 4px 0 8px;
+            border: 2px solid var(--ocre-d); border-radius: 6px; font-size: 15px; background: #fff;
         }
         .btn-add-schedule {
-            background: var(--crema);
-            color: var(--azul-elec);
-            border: 1.5px dashed var(--azul-elec);
-            padding: 7px 18px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 0.9rem;
-            font-weight: 700;
-            font-family: var(--font-body);
-            transition: all 0.2s ease;
-            margin-top: 4px;
+            background: var(--crema) !important; color: var(--azul-elec) !important;
+            border: 1.5px dashed var(--azul-elec) !important; box-shadow: none !important;
+            padding: 7px 16px !important; font-size: 0.88rem !important; margin-top: 4px;
         }
-        .btn-add-schedule:hover {
-            background: var(--azul-elec);
-            color: #fff;
-            border-style: solid;
+        .btn-add-schedule:hover { background: var(--azul-elec) !important; color: #fff !important; border-style: solid !important; }
+
+        @media (max-width: 768px) {
+            .section { padding: 90px 12px 24px; }
+            .editor-container { padding: 18px 14px; }
+            .nav-menu a { font-size: 15px; padding: 5px 10px; }
+            .editor-form input, .editor-form select, .editor-form textarea,
+            .modal-form input, .modal-form select, .modal-form textarea { max-width: 100% !important; }
         }
     </style>
 </head>
@@ -1747,6 +1007,7 @@ $days_of_week = [
     <nav class="nav-menu">
         <ul>
             <li><a href="index.php#home">Home</a></li>
+            <li><a href="carta/" target="_blank">Ver Carta</a></li>
             <li><a href="panel.php">Estadísticas</a></li>
             <li><a href="logout.php">Logout</a></li>
         </ul>
@@ -1755,33 +1016,35 @@ $days_of_week = [
     <section class="section">
         <div class="editor-container">
             <h2>Editor de Menú</h2>
-            <?php if (!empty($errors)): ?>
-                <?php foreach ($errors as $error): ?>
-                    <p class="error"><?php echo htmlspecialchars($error); ?></p>
-                <?php endforeach; ?>
-            <?php endif; ?>
-            <?php if (!empty($success)): ?>
-                <?php foreach ($success as $msg): ?>
-                    <p class="success"><?php echo htmlspecialchars($msg); ?></p>
-                <?php endforeach; ?>
-            <?php endif; ?>
- <!-- Business Hours Management -->
+            <?php foreach ($errors as $error): ?>
+                <p class="error"><?php echo htmlspecialchars($error, ENT_QUOTES, 'UTF-8'); ?></p>
+            <?php endforeach; ?>
+            <?php foreach ($success as $msg): ?>
+                <p class="success"><?php echo htmlspecialchars($msg, ENT_QUOTES, 'UTF-8'); ?></p>
+            <?php endforeach; ?>
+
+            <!-- 1. Horarios de Atención (un solo paso con cruce de medianoche) -->
             <details>
                 <summary>Administrar Horarios de Atención</summary>
                 <div class="editor-form">
                     <h3>Agregar Nuevo Horario</h3>
-                    <form method="POST" onsubmit="return validateBusinessHoursForm(this)">
-                        <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
+                    <p class="note">
+                        Podés cargar horarios nocturnos en <strong>una sola fila</strong>: por ejemplo, si ponés
+                        <strong>Viernes de 20:30 a 00:30</strong>, el sistema entiende automáticamente que sigue abierto hasta las 00:30 de la madrugada del Sábado (sin tener que partirlo en 23:59 + 00:00).
+                    </p>
+                    <form method="POST" onsubmit="return validateBusinessHoursForm(this)" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
+                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>">
                         <input type="hidden" name="action" value="add_business_hours">
-                        <select name="day_of_week" required>
-                            <option value="">Selecciona un día</option>
+                        <select name="day_of_week" required style="max-width:170px;">
+                            <option value="">Día de apertura</option>
                             <?php foreach ($days_of_week as $day => $abbr): ?>
-                                <option value="<?php echo $day; ?>"><?php echo $day; ?></option>
+                                <option value="<?php echo htmlspecialchars($day, ENT_QUOTES, 'UTF-8'); ?>"><?php echo htmlspecialchars($day, ENT_QUOTES, 'UTF-8'); ?></option>
                             <?php endforeach; ?>
                         </select>
-                        <input type="time" name="start_time" required>
-                        <input type="time" name="end_time" required>
-                        <p class="note">Nota: Puedes ingresar horarios que crucen la medianoche (ej. 20:00 a 00:30).</p>
+                        <label>Desde:</label>
+                        <input type="time" name="start_time" required style="max-width:130px;">
+                        <label>Hasta:</label>
+                        <input type="time" name="end_time" required style="max-width:130px;">
                         <button type="submit">Agregar Horario</button>
                     </form>
                 </div>
@@ -1791,34 +1054,41 @@ $days_of_week = [
                         <thead>
                             <tr>
                                 <th>Día</th>
-                                <th>Hora de Inicio</th>
-                                <th>Hora de Fin</th>
-                                <th>Acciones</th>
+                                <th>Franja actual</th>
+                                <th>Editar / Eliminar</th>
                             </tr>
                         </thead>
                         <tbody>
-                            <?php foreach ($business_hours as $hours): ?>
+                            <?php foreach ($business_hours as $hours):
+                                $sFmt = substr((string)$hours['start_time'], 0, 5);
+                                $eFmt = substr((string)$hours['end_time'], 0, 5);
+                                $crossesMidnight = ($hours['end_time'] <= $hours['start_time']);
+                                $nextDayLabel = $crossesMidnight ? nextDayOfWeek((string)$hours['day_of_week']) : '';
+                            ?>
                                 <tr>
-                                    <td><?php echo htmlspecialchars($hours['day_of_week']); ?></td>
-                                    <td><?php echo htmlspecialchars($hours['start_time']); ?></td>
-                                    <td><?php echo htmlspecialchars($hours['end_time']); ?></td>
+                                    <td><strong><?php echo htmlspecialchars((string)$hours['day_of_week'], ENT_QUOTES, 'UTF-8'); ?></strong></td>
+                                    <td>
+                                        <div><strong><?php echo htmlspecialchars($sFmt . ' — ' . $eFmt, ENT_QUOTES, 'UTF-8'); ?></strong></div>
+                                        <?php if ($crossesMidnight): ?>
+                                            <span class="midnight-badge">🌙 Termina <?php echo htmlspecialchars($nextDayLabel . ' ' . $eFmt, ENT_QUOTES, 'UTF-8'); ?></span>
+                                        <?php endif; ?>
+                                    </td>
                                     <td>
                                         <form method="POST" class="hours-form" onsubmit="return validateBusinessHoursForm(this)">
-                                            <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
-                        <input type="hidden" name="action" value="update_business_hours">
-                                            <input type="hidden" name="id" value="<?php echo $hours['id']; ?>">
+                                            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>">
+                                            <input type="hidden" name="action" value="update_business_hours">
+                                            <input type="hidden" name="id" value="<?php echo (int)$hours['id']; ?>">
                                             <select name="day_of_week" required>
-                                                <option value="">Selecciona un día</option>
                                                 <?php foreach ($days_of_week as $day => $abbr): ?>
-                                                    <option value="<?php echo $day; ?>" <?php if ($hours['day_of_week'] === $day) echo 'selected'; ?>>
-                                                        <?php echo $day; ?>
+                                                    <option value="<?php echo htmlspecialchars($day, ENT_QUOTES, 'UTF-8'); ?>" <?php if ($hours['day_of_week'] === $day) echo 'selected'; ?>>
+                                                        <?php echo htmlspecialchars($day, ENT_QUOTES, 'UTF-8'); ?>
                                                     </option>
                                                 <?php endforeach; ?>
                                             </select>
-                                            <input type="time" name="start_time" value="<?php echo $hours['start_time']; ?>" required>
-                                            <input type="time" name="end_time" value="<?php echo $hours['end_time']; ?>" required>
-                                            <button type="submit">Actualizar</button>
-                                            <button type="submit" name="action" value="delete_business_hours">Eliminar</button>
+                                            <input type="time" name="start_time" value="<?php echo htmlspecialchars($sFmt, ENT_QUOTES, 'UTF-8'); ?>" required>
+                                            <input type="time" name="end_time" value="<?php echo htmlspecialchars($eFmt, ENT_QUOTES, 'UTF-8'); ?>" required>
+                                            <button type="submit">Guardar</button>
+                                            <button type="submit" name="action" value="delete_business_hours" onclick="return confirm('¿Eliminar este horario?');" style="background:#6b7280;border-color:#4b5563;box-shadow:2px 2px 0 #4b5563;">Eliminar</button>
                                         </form>
                                     </td>
                                 </tr>
@@ -1828,55 +1098,80 @@ $days_of_week = [
                 </div>
             </details>
 
-            <!-- Datos de Transferencia -->
+            <!-- 2. Datos de Transferencia -->
             <details>
                 <summary>Datos de Transferencia</summary>
                 <div class="editor-form">
                     <h3>Alias y titular que ve el cliente</h3>
-                    <p class="note">Se muestran en la carta cuando el cliente elige pagar por transferencia (el aviso en pantalla y el mensaje que arma el WhatsApp).</p>
+                    <p class="note">Se muestran en el carrito y en el mensaje de WhatsApp cuando el cliente elige pagar por transferencia.</p>
                     <form method="POST">
-                        <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
+                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>">
                         <input type="hidden" name="action" value="update_transfer_settings">
-                        <input type="text" name="transfer_alias" value="<?php echo htmlspecialchars($transfer_alias); ?>" placeholder="Alias" maxlength="190" required>
-                        <input type="text" name="transfer_holder" value="<?php echo htmlspecialchars($transfer_holder); ?>" placeholder="Titular de la cuenta" maxlength="190" required>
-                        <button type="submit">Guardar</button>
+                        <label>Alias CBU/CVU:</label>
+                        <input type="text" name="transfer_alias" value="<?php echo htmlspecialchars($transfer_alias, ENT_QUOTES, 'UTF-8'); ?>" placeholder="Alias" maxlength="190" required>
+                        <label>Titular de la cuenta:</label>
+                        <input type="text" name="transfer_holder" value="<?php echo htmlspecialchars($transfer_holder, ENT_QUOTES, 'UTF-8'); ?>" placeholder="Titular de la cuenta" maxlength="190" required>
+                        <div style="margin-top:8px;"><button type="submit">Guardar transferencia</button></div>
                     </form>
                 </div>
             </details>
-            <!-- Category Management -->
+
+            <!-- 3. Pixel de Meta y Google Analytics / Tag Manager -->
+            <details>
+                <summary>Pixel de Meta y Google Analytics</summary>
+                <div class="editor-form">
+                    <h3>Trackers activos en Home, Carta y Tienda</h3>
+                    <p class="note">
+                        Estos IDs se inyectan automáticamente en <strong>arrabbiata.com.ar</strong>, <strong>carta.arrabbiata.com.ar</strong> y <strong>tienda.php</strong>, disparando eventos estándar de comercio electrónico:
+                        <code>PageView</code>, <code>AddToCart</code>, <code>InitiateCheckout</code>, <code>Purchase</code> (con código único y monto en ARS) y <code>Contact</code>.
+                    </p>
+                    <form method="POST">
+                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>">
+                        <input type="hidden" name="action" value="update_tracking_settings">
+                        <label>Google Tag Manager ID (Contenedor):</label>
+                        <input type="text" name="gtm_id" value="<?php echo htmlspecialchars($gtm_id, ENT_QUOTES, 'UTF-8'); ?>" placeholder="GTM-5JWLLKC7" maxlength="32">
+                        <label>Meta Pixel ID (Facebook / Instagram Ads):</label>
+                        <input type="text" name="meta_pixel_id" value="<?php echo htmlspecialchars($meta_pixel_id, ENT_QUOTES, 'UTF-8'); ?>" placeholder="313442609878673" maxlength="32">
+                        <label>Google Analytics 4 ID directo (opcional si ya lo cargás dentro de GTM):</label>
+                        <input type="text" name="ga4_id" value="<?php echo htmlspecialchars($ga4_id, ENT_QUOTES, 'UTF-8'); ?>" placeholder="G-XXXXXXXXXX (opcional)" maxlength="32">
+                        <div style="margin-top:8px;"><button type="submit">Guardar Trackers</button></div>
+                    </form>
+                </div>
+            </details>
+
+            <!-- 4. Administrar Categorías -->
             <details>
                 <summary>Administrar Categorías</summary>
                 <div class="editor-form">
                     <h3>Agregar Nueva Categoría</h3>
                     <form method="POST" onsubmit="return validateCategoryForm(this)">
-                        <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
+                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>">
                         <input type="hidden" name="action" value="add_category">
                         <input type="text" name="category_name" placeholder="Nombre de la Categoría" required>
                         <input type="number" name="category_display_order" placeholder="Orden de Visualización" value="0" required>
-                        <button type="submit">Agregar Categoría</button>
+                        <div><button type="submit">Agregar Categoría</button></div>
                     </form>
                 </div>
                 <div class="category-list">
                     <h3>Categorías Existentes</h3>
-                    <p class="note" style="margin-bottom:10px;">Arrastrá las categorías para reordenarlas, luego confirmá. Para editar el nombre o eliminar, usá los controles de cada fila.</p>
+                    <p class="note">Arrastrá las categorías con <strong>⠿</strong> para reordenarlas y luego confirmá.</p>
                     <ul id="category-sortable" style="list-style:none;padding:0;margin:0 0 14px;">
                     <?php foreach ($categories as $category): ?>
-                        <li data-id="<?php echo $category['id']; ?>"
-                            style="display:flex;align-items:center;gap:10px;background:white;border-radius:10px;padding:12px 16px;margin-bottom:8px;box-shadow:0 2px 8px rgba(0,0,0,0.08);cursor:default;">
+                        <li data-id="<?php echo (int)$category['id']; ?>"
+                            style="display:flex;align-items:center;gap:10px;background:white;border-radius:10px;padding:12px 16px;margin-bottom:8px;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
                             <span class="cat-drag-handle" title="Arrastrá para reordenar"
                                 style="cursor:grab;color:#aaa;font-size:1.2rem;user-select:none;flex-shrink:0;">⠿</span>
                             <form method="POST" onsubmit="return validateCategoryForm(this)"
                                 style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;flex:1;">
-                                <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
+                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>">
                                 <input type="hidden" name="action" value="update_category">
-                                <input type="hidden" name="category_id" value="<?php echo $category['id']; ?>">
-                                <input type="hidden" name="category_display_order" value="<?php echo $category['display_order']; ?>">
+                                <input type="hidden" name="category_id" value="<?php echo (int)$category['id']; ?>">
+                                <input type="hidden" name="category_display_order" value="<?php echo (int)$category['display_order']; ?>">
                                 <input type="text" name="category_name"
-                                    value="<?php echo htmlspecialchars($category['name']); ?>"
-                                    required
-                                    style="flex:1;min-width:140px;">
+                                    value="<?php echo htmlspecialchars((string)$category['name'], ENT_QUOTES, 'UTF-8'); ?>"
+                                    required style="flex:1;min-width:140px;">
                                 <button type="submit">Actualizar</button>
-                                <button type="submit" name="action" value="delete_category">Eliminar</button>
+                                <button type="submit" name="action" value="delete_category" onclick="return confirm('¿Eliminar esta categoría?');" style="background:#6b7280;border-color:#4b5563;box-shadow:2px 2px 0 #4b5563;">Eliminar</button>
                             </form>
                         </li>
                     <?php endforeach; ?>
@@ -1889,23 +1184,21 @@ $days_of_week = [
                 </div>
             </details>
 
-            <!-- Bulk Price Editor -->
+            <!-- 5. Actualización Masiva -->
             <details>
                 <summary>Actualización Masiva</summary>
                 <div class="editor-form">
-                    <h3>Editar precios de todos los productos</h3>
+                    <h3>Editar precios y visibilidad de todos los productos</h3>
                     <p class="note" style="margin-bottom:12px;">
-                        Modificá los precios directamente en la tabla y guardá con un solo clic. Dejá el precio secundario en blanco para no modificarlo.<br>
-                        <strong>👁</strong> = visible en carta &nbsp;|&nbsp; <strong>🚫</strong> = oculto en carta (clic para alternar, se guarda al instante) &nbsp;|&nbsp;
-                        <strong>⠿</strong> = arrastrá para reordenar dentro de la categoría &nbsp;|&nbsp; <strong>✕</strong> = eliminar producto
+                        <strong>👁</strong> = visible &nbsp;|&nbsp; <strong>🚫</strong> = oculto (se guarda al instante) &nbsp;|&nbsp;
+                        <strong>⠿</strong> = arrastrar para ordenar &nbsp;|&nbsp; <strong>✕</strong> = marcar para eliminar al guardar
                     </p>
                     <form method="POST" id="bulk-price-form">
-                        <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
+                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>">
                         <input type="hidden" name="action" value="bulk_update_prices">
                         <div style="overflow-x:auto;">
                         <div id="bulk-cat-sortable">
                         <?php
-                        // Agrupar items por categoría para mostrarlos agrupados con sus handles de drag
                         $items_by_cat = [];
                         foreach ($menu_items as $it) {
                             $items_by_cat[$it['category_id']][] = $it;
@@ -1913,335 +1206,197 @@ $days_of_week = [
                         foreach ($categories as $cat):
                             if (empty($items_by_cat[$cat['id']])) continue;
                         ?>
-                        <div class="bulk-cat-block" data-cat-id="<?php echo $cat['id']; ?>" style="margin-bottom:4px;">
+                        <div class="bulk-cat-block" data-cat-id="<?php echo (int)$cat['id']; ?>" style="margin-bottom:4px;">
                         <p style="font-weight:700;margin:14px 0 4px;font-size:0.95rem;color:#555;border-bottom:1px solid #ddd;padding-bottom:4px;display:flex;align-items:center;gap:10px;">
                             <span class="bulk-cat-handle" title="Arrastrá para reordenar categorías"
                                 style="cursor:grab;color:#aaa;font-size:1.1rem;user-select:none;flex-shrink:0;">⠿</span>
-                            <?php echo htmlspecialchars($cat['name']); ?>
+                            <?php echo htmlspecialchars((string)$cat['name'], ENT_QUOTES, 'UTF-8'); ?>
                             <span style="margin-left:auto;display:flex;gap:6px;">
-                                <button type="button"
-                                    class="bulk-raise-btn"
-                                    data-category="<?php echo $cat['id']; ?>"
-                                    data-amount="-1000"
-                                    style="background:#e65c00;color:white;border:none;border-radius:20px;padding:3px 12px;font-size:0.8rem;cursor:pointer;font-weight:600;">
+                                <button type="button" class="bulk-raise-btn" data-category="<?php echo (int)$cat['id']; ?>" data-amount="-1000"
+                                    style="background:#e65c00;color:white;border:none;border-radius:20px;padding:3px 12px;font-size:0.8rem;cursor:pointer;font-weight:600;box-shadow:none;">
                                     -$1000
                                 </button>
-                                <button type="button"
-                                    class="bulk-raise-btn"
-                                    data-category="<?php echo $cat['id']; ?>"
-                                    data-amount="1000"
-                                    style="background:#007bff;color:white;border:none;border-radius:20px;padding:3px 12px;font-size:0.8rem;cursor:pointer;font-weight:600;">
+                                <button type="button" class="bulk-raise-btn" data-category="<?php echo (int)$cat['id']; ?>" data-amount="1000"
+                                    style="background:#007bff;color:white;border:none;border-radius:20px;padding:3px 12px;font-size:0.8rem;cursor:pointer;font-weight:600;box-shadow:none;">
                                     +$1000
                                 </button>
                             </span>
                         </p>
-                        <table class="hours-table" style="width:100%;min-width:500px;margin-bottom:8px;">
+                        <table class="hours-table" style="width:100%;min-width:440px;margin-bottom:8px;">
                             <thead>
                                 <tr>
-                                    <th style="width:28px;"></th><!-- drag handle -->
+                                    <th style="width:28px;"></th>
                                     <th style="text-align:left;">Producto</th>
-                                    <th>Precio</th>
-                                    <th>Precio 2°</th>
-                                    <th style="width:36px;text-align:center;">👁</th>
-                                    <th style="width:36px;text-align:center;">✕</th>
+                                    <th style="width:130px;">Precio ($)</th>
+                                    <th style="width:42px;text-align:center;">👁</th>
+                                    <th style="width:42px;text-align:center;">✕</th>
                                 </tr>
                             </thead>
-                            <tbody class="bulk-sortable" data-category="<?php echo $cat['id']; ?>">
+                            <tbody class="bulk-sortable" data-category="<?php echo (int)$cat['id']; ?>">
                                 <?php foreach ($items_by_cat[$cat['id']] as $item): ?>
-                                <tr data-id="<?php echo $item['id']; ?>" style="<?php echo !$item['is_visible'] ? 'opacity:0.5;' : ''; ?>">
+                                <tr data-id="<?php echo (int)$item['id']; ?>" style="<?php echo !$item['is_visible'] ? 'opacity:0.5;' : ''; ?>">
                                     <td style="cursor:grab;color:#aaa;font-size:1.1rem;text-align:center;user-select:none;" class="bulk-drag-handle" title="Arrastrá para reordenar">⠿</td>
-                                    <td><?php echo htmlspecialchars($item['name']); ?></td>
                                     <td>
-                                        <input type="number" step="0.01" min="0.01" required
-                                            name="prices[<?php echo $item['id']; ?>]"
-                                            value="<?php echo htmlspecialchars($item['price']); ?>"
-                                            style="width:110px;max-width:110px;padding:6px;border:1px solid #ccc;border-radius:5px;text-align:right;">
+                                        <?php echo htmlspecialchars((string)$item['name'], ENT_QUOTES, 'UTF-8'); ?>
+                                        <?php if (!empty($item['is_weekly_special'])): ?><span class="mini-badge dest">⭐ Destacado</span><?php endif; ?>
+                                        <?php if (!empty($item['is_secret_menu'])): ?><span class="mini-badge sec">🕵️ Secreta</span><?php endif; ?>
                                     </td>
                                     <td>
-                                        <input type="number" step="0.01" min="0.01"
-                                            name="secondary_prices[<?php echo $item['id']; ?>]"
-                                            value="<?php echo htmlspecialchars($item['secondary_price'] ?? ''); ?>"
-                                            placeholder="—"
-                                            style="width:110px;max-width:110px;padding:6px;border:1px solid #ccc;border-radius:5px;text-align:right;">
+                                        <input type="number" step="0.01" min="0.01" required
+                                            name="prices[<?php echo (int)$item['id']; ?>]"
+                                            value="<?php echo htmlspecialchars((string)$item['price'], ENT_QUOTES, 'UTF-8'); ?>"
+                                            style="width:115px;max-width:115px;padding:6px;border:1px solid #ccc;border-radius:5px;text-align:right;">
                                     </td>
                                     <td style="text-align:center;">
                                         <button type="button"
                                             class="bulk-vis-btn"
-                                            data-id="<?php echo $item['id']; ?>"
-                                            data-csrf="<?php echo $_SESSION['csrf_token']; ?>"
+                                            data-id="<?php echo (int)$item['id']; ?>"
+                                            data-csrf="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>"
                                             title="<?php echo $item['is_visible'] ? 'Visible — clic para ocultar' : 'Oculto — clic para mostrar'; ?>"
-                                            style="background:none;border:none;cursor:pointer;font-size:1.2rem;padding:2px 6px;">
+                                            style="background:none;border:none;box-shadow:none;cursor:pointer;font-size:1.2rem;padding:2px 6px;">
                                             <?php echo $item['is_visible'] ? '👁' : '🚫'; ?>
                                         </button>
                                     </td>
                                     <td style="text-align:center;">
                                         <button type="button"
-                                            data-name="<?php echo addslashes(htmlspecialchars($item['name'])); ?>"
+                                            data-name="<?php echo htmlspecialchars((string)$item['name'], ENT_QUOTES, 'UTF-8'); ?>"
                                             class="bulk-delete-btn"
-                                            style="background:none;border:none;cursor:pointer;font-size:1.2rem;color:#cc0000;padding:2px 6px;" title="Eliminar producto">✕</button>
-                                        <input type="checkbox" class="bulk-delete-input" name="delete_ids[]" value="<?php echo $item['id']; ?>" style="display:none;">
+                                            style="background:none;border:none;box-shadow:none;cursor:pointer;font-size:1.2rem;color:#cc0000;padding:2px 6px;" title="Eliminar producto">✕</button>
+                                        <input type="checkbox" class="bulk-delete-input" name="delete_ids[]" value="<?php echo (int)$item['id']; ?>" style="display:none;">
                                     </td>
                                 </tr>
                                 <?php endforeach; ?>
                             </tbody>
                         </table>
-                        </div><!-- .bulk-cat-block -->
-                        <?php endforeach; ?>
-                        </div><!-- #bulk-cat-sortable -->
                         </div>
-                        <button type="submit" style="margin-top:16px;background:#cc0000;color:white;padding:10px 28px;border:none;border-radius:8px;font-size:1rem;cursor:pointer;">
-                            Guardar todos los precios
-                        </button>
+                        <?php endforeach; ?>
+                        </div>
+                        </div>
+                        <button type="submit" style="margin-top:14px;">Guardar todos los precios</button>
                     </form>
                 </div>
             </details>
-            <script>
-            // ── Botones -$1000 / +$1000 por categoría ────────────────────────────────
-            document.querySelectorAll('.bulk-raise-btn').forEach(function(btn) {
-                btn.addEventListener('click', function() {
-                    var catId  = btn.dataset.category;
-                    var amount = parseFloat(btn.dataset.amount);
-                    var tbody = document.querySelector('.bulk-sortable[data-category="' + catId + '"]');
-                    if (!tbody) return;
-                    tbody.querySelectorAll('input[name^="prices["]').forEach(function(input) {
-                        var current = parseFloat(input.value) || 0;
-                        var result  = current + amount;
-                        input.value = (result < 0.01 ? 0.01 : result).toFixed(2);
-                    });
-                });
-            });
 
-            // ── Drag & drop para reordenar CATEGORÍAS en el bulk editor ─────────────
-            (function() {
-                var bulkCatContainer = document.getElementById('bulk-cat-sortable');
-                if (!bulkCatContainer) return;
-                var csrf = document.querySelector('#bulk-price-form input[name="csrf_token"]').value;
-                Sortable.create(bulkCatContainer, {
-                    handle: '.bulk-cat-handle',
-                    animation: 150,
-                    ghostClass: 'sortable-ghost',
-                    onEnd: async function() {
-                        var blocks = Array.from(bulkCatContainer.querySelectorAll('.bulk-cat-block[data-cat-id]'));
-                        var order  = blocks.map(function(b) { return b.dataset.catId; });
-                        var fd = new FormData();
-                        fd.append('action',     'reorder_categories');
-                        fd.append('order',      JSON.stringify(order));
-                        fd.append('csrf_token', csrf);
-                        try {
-                            var res  = await fetch('editor.php', { method:'POST', body: fd });
-                            var data = await res.json();
-                            if (!data.ok) alert('Error al guardar orden de categorías: ' + (data.error || ''));
-                        } catch(e) {
-                            alert('Error de conexión al guardar el orden de categorías.');
-                        }
-                    }
-                });
-            })();
-
-            // ── Botón ✕ de eliminar (bulk) ───────────────────────────────────────────
-            document.querySelectorAll('.bulk-delete-btn').forEach(function(btn) {
-                btn.addEventListener('click', function() {
-                    var name = btn.dataset.name || 'este producto';
-                    if (!confirm('¿Eliminar "' + name + '"?\nEsta acción no se puede deshacer.')) return;
-                    var row = btn.closest('tr');
-                    var chk = row.querySelector('.bulk-delete-input');
-                    chk.disabled = false;
-                    chk.checked  = true;
-                    row.style.opacity = '0.35';
-                    btn.disabled = true;
-                });
-            });
-
-            // ── Botón ojito de visibilidad (bulk) ────────────────────────────────────
-            document.querySelectorAll('.bulk-vis-btn').forEach(function(btn) {
-                btn.addEventListener('click', async function() {
-                    var id = btn.dataset.id;
-                    var csrf = btn.dataset.csrf;
-                    var fd = new FormData();
-                    fd.append('action', 'toggle_visibility');
-                    fd.append('id', id);
-                    fd.append('csrf_token', csrf);
-                    try {
-                        var res = await fetch('editor.php', { method:'POST', body: fd });
-                        var data = await res.json();
-                        if (data.ok) {
-                            var row = btn.closest('tr');
-                            if (data.is_visible) {
-                                btn.textContent = '👁';
-                                btn.title = 'Visible — clic para ocultar';
-                                row.style.opacity = '';
-                            } else {
-                                btn.textContent = '🚫';
-                                btn.title = 'Oculto — clic para mostrar';
-                                row.style.opacity = '0.5';
-                            }
-                        } else {
-                            alert('Error al cambiar visibilidad: ' + (data.error || ''));
-                        }
-                    } catch(e) {
-                        alert('Error de conexión al cambiar visibilidad.');
-                    }
-                });
-            });
-
-            // ── Drag & drop para reordenar dentro de cada categoría ──────────────────
-            document.querySelectorAll('.bulk-sortable').forEach(function(tbody) {
-                Sortable.create(tbody, {
-                    handle: '.bulk-drag-handle',
-                    animation: 150,
-                    ghostClass: 'sortable-ghost',
-                    onEnd: async function(evt) {
-                        var rows  = Array.from(evt.to.querySelectorAll('tr[data-id]'));
-                        var order = rows.map(function(r){ return r.dataset.id; });
-                        var csrf  = document.querySelector('#bulk-price-form input[name="csrf_token"]').value;
-                        var fd = new FormData();
-                        fd.append('action',     'reorder_items');
-                        fd.append('order',      JSON.stringify(order));
-                        fd.append('csrf_token', csrf);
-                        try {
-                            var res  = await fetch('editor.php', { method:'POST', body: fd });
-                            var data = await res.json();
-                            if (!data.ok) alert('Error al guardar orden: ' + (data.error || ''));
-                        } catch(e) {
-                            alert('Error de conexión al guardar el orden.');
-                        }
-                    }
-                });
-            });
-            </script>
-
-            <!-- Add Item -->
+            <!-- 6. Agregar Nuevo Producto -->
             <details>
                 <summary>Agregar Nuevo Producto</summary>
                 <div class="editor-form">
                     <form method="POST" enctype="multipart/form-data" onsubmit="return validateItemForm(this)">
-                        <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
+                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>">
                         <input type="hidden" name="action" value="add_item">
-                        <input type="text" name="name" placeholder="Nombre" required>
+                        <label>Nombre del producto:</label>
+                        <input type="text" name="name" placeholder="Ej: Pizza Margherita / L'Arrabbiata" required>
+                        <label>Precio base ($):</label>
                         <input type="number" step="0.01" name="price" placeholder="Precio" min="0.01" required>
-                        <input type="number" step="0.01" name="secondary_price" placeholder="Precio Secundario (Para tu pizza, opcional)" min="0.01">
+                        <label>Categoría:</label>
                         <select name="category_id" required>
                             <?php foreach ($categories as $category): ?>
-                                <option value="<?php echo $category['id']; ?>"><?php echo htmlspecialchars($category['name']); ?></option>
+                                <option value="<?php echo (int)$category['id']; ?>"><?php echo htmlspecialchars((string)$category['name'], ENT_QUOTES, 'UTF-8'); ?></option>
                             <?php endforeach; ?>
                         </select>
-                        <textarea name="description" placeholder="Descripción"></textarea>
-                        <label>Imagen (Subir archivo)</label>
+                        <label>Descripción / Ingredientes:</label>
+                        <textarea name="description" rows="3" placeholder="Descripción de ingredientes"></textarea>
+
+                        <label>Imagen (Subir archivo y recortar 1:1):</label>
                         <input type="file" name="image" accept="image/*" class="crop-file-input">
                         <input type="hidden" name="cropped_image_data" class="cropped-data-field">
                         <div class="crop-preview-wrap" style="margin:4px 0 8px;min-height:0;"></div>
-                        <label>Imagen (URL)</label>
-                        <input type="url" name="image_url" placeholder="https://example.com/image.jpg">
+
+                        <label>O URL externa de imagen (opcional):</label>
+                        <input type="url" name="image_url" placeholder="https://...">
+
                         <div class="toggle-group">
                             <div class="toggle-inputs">
                                 <label>Visible en la Web:</label>
-                                <div class="toggle-selector" data-input="is_visible">
-                                    <div class="option-toggle active" data-option="is_visible" tabindex="0" role="button" aria-label="Activar visibilidad en la web">V</div>
+                                <div class="toggle-selector">
+                                    <div class="option-toggle active" data-option="is_visible" tabindex="0" role="button" aria-label="Visible en la web">V</div>
                                 </div>
                                 <input type="hidden" name="is_visible" value="1">
                             </div>
                             <div class="toggle-inputs">
-                                <label>Ofrece Opción Vegana:</label>
-                                <div class="toggle-selector" data-input="has_vegan_option">
-                                    <div class="option-toggle" data-option="has_vegan_option" tabindex="0" role="button" aria-label="Activar opción vegana">VG</div>
+                                <label>Opción Vegana:</label>
+                                <div class="toggle-selector">
+                                    <div class="option-toggle" data-option="has_vegan_option" tabindex="0" role="button" aria-label="Opción vegana">VG</div>
                                 </div>
-                                <input type="hidden" name="has_vegan_option" value="0" disabled>
+                                <input type="hidden" name="has_vegan_option" value="1" disabled>
                             </div>
                             <div class="toggle-inputs">
-                                <label>Requiere Pizza:</label>
-                                <div class="toggle-selector" data-input="requires_pizza">
-                                    <div class="option-toggle" data-option="requires_pizza" tabindex="0" role="button" aria-label="Activar requerimiento de pizza">P</div>
+                                <label title="Muestra una cinta roja destacada arriba de la foto">Destacado (cinta):</label>
+                                <div class="toggle-selector">
+                                    <div class="option-toggle" data-option="is_weekly_special" tabindex="0" role="button" aria-label="Destacado">D</div>
                                 </div>
-                                <input type="hidden" name="requires_pizza" value="0" disabled>
+                                <input type="hidden" name="is_weekly_special" value="1" disabled>
                             </div>
                             <div class="toggle-inputs">
-                                <label>Destacado:</label>
-                                <div class="toggle-selector" data-input="is_weekly_special">
-                                    <div class="option-toggle" data-option="is_weekly_special" tabindex="0" role="button" aria-label="Activar destacado">D</div>
+                                <label title="Oculta el producto hasta que el cliente descubre y toca el personaje secreto">Carta Secreta:</label>
+                                <div class="toggle-selector">
+                                    <div class="option-toggle" data-option="is_secret_menu" tabindex="0" role="button" aria-label="Carta Secreta">CS</div>
                                 </div>
-                                <input type="hidden" name="is_weekly_special" value="0" disabled>
-                            </div>
-                            <div class="toggle-inputs">
-                                <label>Carta Secreta:</label>
-                                <div class="toggle-selector" data-input="is_secret_menu">
-                                    <div class="option-toggle" data-option="is_secret_menu" tabindex="0" role="button" aria-label="Activar carta secreta">CS</div>
-                                </div>
-                                <input type="hidden" name="is_secret_menu" value="0" disabled>
+                                <input type="hidden" name="is_secret_menu" value="1" disabled>
                             </div>
                         </div>
-                        <div id="weekly_special_text_container" style="display: none;">
-                            <input type="text" name="weekly_special_text" class="weekly-special-text" placeholder="Texto Destacado" value="¡Pizza de la semana!">
+
+                        <div class="weekly-special-text-wrap" style="display: none;">
+                            <label>Texto de la cinta destacada:</label>
+                            <input type="text" name="weekly_special_text" class="weekly-special-text" placeholder="Ej: ¡Pizza de la semana!" value="¡Pizza de la semana!">
                         </div>
-                        <div class="schedules-section">
-                            <label style="font-weight:700;font-size:1rem;color:#333;display:block;margin-bottom:8px;">
-                                Franjas de disponibilidad:
-                            </label>
-                            <div class="schedules-container" id="schedules-add">
-                                <!-- Las franjas se insertan aquí por JS -->
-                            </div>
-                            <button type="button" class="btn-add-schedule" onclick="addScheduleRow(document.getElementById('schedules-add'), <?php echo htmlspecialchars(json_encode(array_keys($days_of_week)), ENT_QUOTES); ?>, <?php echo htmlspecialchars(json_encode(array_values($days_of_week)), ENT_QUOTES); ?>)">
-                                + Agregar franja horaria
+
+                        <div class="schedules-section" style="margin-top:8px;">
+                            <label>Franjas de disponibilidad (dejá todos los días sin horas para mostrar siempre):</label>
+                            <div class="schedules-container" id="schedules-add"></div>
+                            <button type="button" class="btn-add-schedule" onclick="addScheduleRow(document.getElementById('schedules-add'), null, null, [], '', '')">
+                                + Agregar otra franja horaria
                             </button>
                         </div>
-                        <input type="number" name="required_selections" placeholder="Selecciones Requeridas (ej. 3 para Combo 3 Pizzas)" min="0">
-                        <div class="sub-items-inputs">
-                            <label>Productos Incluidos (opcional):</label>
-                            <div id="sub-items-add">
-                                <div class="sub-item">
-                                    <select name="sub_item_ids[]">
-                                        <option value="">Selecciona un producto</option>
-                                        <?php foreach ($menu_items as $sub_item): ?>
-                                            <option value="<?php echo $sub_item['id']; ?>"><?php echo htmlspecialchars($sub_item['name']); ?></option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                    <input type="number" name="sub_item_quantities[]" placeholder="Cantidad" min="1" value="1">
-                                    <input type="checkbox" name="sub_item_required[]" value="1">
-                                    <label>Requerido</label>
-                                    <button type="button" onclick="this.parentElement.remove()">Eliminar</button>
-                                </div>
-                            </div>
-                            <button type="button" onclick="addSubItem('sub-items-add')">Agregar otro sub-producto</button>
-                        </div>
-                        <div class="variants-inputs" style="margin:12px 0;padding:12px;border:1px dashed #aaa;border-radius:8px;">
-                            <label style="font-weight:700;display:block;margin-bottom:6px;">Variantes con precio propio (opcional):</label>
-                            <p style="font-size:.85rem;color:#666;margin:0 0 8px;">Ej. "Pizza Porteña por porción" → Muzza, Fugazzeta, Arrabbiata. Si cargás variantes, el cliente elige una y se cobra su precio.</p>
+
+                        <div class="variants-inputs" style="margin:12px 0;padding:12px;border:1px dashed #aaa;border-radius:8px;background:#fff;">
+                            <label style="margin-top:0;">Variantes con precio propio (opcional):</label>
+                            <p class="note">Ej: Fugazzeta → Común / Queso Azul (hasta 3 se ven como botones en la tarjeta; 4 o más abren selector). Funcionan también para pedidos programados fuera de horario.</p>
                             <div id="variants-add"></div>
-                            <button type="button" onclick="addVariantRow('variants-add')">+ Agregar variante</button>
+                            <button type="button" class="btn-add-schedule" onclick="addVariantRow('variants-add')">+ Agregar variante</button>
                         </div>
-                        <input type="number" name="display_order" placeholder="Orden de Visualización" value="0" required>
-                        <button type="submit">Agregar Producto</button>
+
+                        <label>Orden de visualización:</label>
+                        <input type="number" name="display_order" placeholder="Orden" value="0" required style="max-width:140px;">
+                        <div style="margin-top:10px;"><button type="submit">Agregar Producto</button></div>
                     </form>
                 </div>
             </details>
 
-            <!-- Item List (Drag and Drop) -->
-            <details>
-                <summary>Productos Existentes</summary>
+            <!-- 7. Productos Existentes (Clic para editar / Arrastrar para ordenar) -->
+            <details open>
+                <summary>Productos Existentes (Clic para editar)</summary>
+                <p class="note" style="padding:14px 20px 0;">Tocá cualquier tarjeta para editar el producto o arrastrala para cambiar su orden.</p>
                 <div class="item-grid" id="item-grid">
                     <?php foreach ($menu_items_by_category as $category_id => $items): ?>
                         <?php foreach ($items as $item): ?>
-                            <div class="item-card" data-id="<?php echo $item['id']; ?>">
-                                <img src="<?php echo htmlspecialchars($item['image_url'] ?: 'https://via.placeholder.com/150?text=Sin+Imagen'); ?>" alt="<?php echo htmlspecialchars($item['name']); ?>">
-                                <h3><?php echo htmlspecialchars($item['name']); ?></h3>
+                            <div class="item-card <?php echo !$item['is_visible'] ? 'is-hidden-item' : ''; ?>" data-id="<?php echo (int)$item['id']; ?>">
+                                <img src="<?php echo htmlspecialchars($item['image_url'] ?: 'https://via.placeholder.com/150?text=Sin+Imagen', ENT_QUOTES, 'UTF-8'); ?>" alt="<?php echo htmlspecialchars((string)$item['name'], ENT_QUOTES, 'UTF-8'); ?>" loading="lazy">
+                                <h3><?php echo htmlspecialchars((string)$item['name'], ENT_QUOTES, 'UTF-8'); ?></h3>
+                                <div class="item-card-badges">
+                                    <span class="mini-badge cat"><?php echo htmlspecialchars((string)$item['category_name'], ENT_QUOTES, 'UTF-8'); ?></span>
+                                    <?php if (!$item['is_visible']): ?><span class="mini-badge hid">🚫 Oculto</span><?php endif; ?>
+                                    <?php if (!empty($item['is_weekly_special'])): ?><span class="mini-badge dest">⭐ <?php echo htmlspecialchars((string)($item['weekly_special_text'] ?: 'Destacado'), ENT_QUOTES, 'UTF-8'); ?></span><?php endif; ?>
+                                    <?php if (!empty($item['is_secret_menu'])): ?><span class="mini-badge sec">🕵️ Secreta</span><?php endif; ?>
+                                    <?php if (!empty($item['has_vegan_option'])): ?><span class="mini-badge veg">🌿 Vegana</span><?php endif; ?>
+                                </div>
                             </div>
                         <?php endforeach; ?>
                     <?php endforeach; ?>
                 </div>
             </details>
 
-            <!-- Modal for Editing Item -->
+            <!-- Modal de Edición -->
             <div class="modal" id="edit-item-modal">
                 <div class="modal-content">
                     <span class="modal-close" onclick="closeModal()">×</span>
-                    <div class="modal-form" id="modal-form-content">
-                        <!-- Form will be loaded dynamically via JavaScript -->
-                    </div>
+                    <div class="modal-form" id="modal-form-content"></div>
                 </div>
             </div>
         </div>
     </section>
 
-    <!-- ── Modal de recorte de imagen ── -->
+    <!-- Modal de Recorte 1:1 -->
     <div id="crop-modal">
         <div id="crop-modal-inner">
             <h4>Recortar imagen (cuadrado 1:1)</h4>
@@ -2256,172 +1411,77 @@ $days_of_week = [
     </div>
 
     <script>
-        // Image Preview for File Upload
-        function setupImagePreview(input) {
-            input.addEventListener('change', function(e) {
-                if (e.target.files[0]) {
-                    const preview = document.createElement('img');
-                    preview.style.maxWidth = '100%';
-                    preview.style.maxHeight = '200px';
-                    preview.style.objectFit = 'contain';
-                    preview.style.borderRadius = '10px';
-                    preview.style.marginBottom = '15px';
-                    preview.src = URL.createObjectURL(e.target.files[0]);
-                    const existingPreview = input.parentNode.querySelector('img:not([src*="Uploads"])');
-                    if (existingPreview) existingPreview.remove();
-                    input.parentNode.insertBefore(preview, input.nextSibling);
-                }
-            });
+        const ALL_ITEMS    = <?php echo json_encode($menu_items, JSON_UNESCAPED_UNICODE); ?> || [];
+        const ALL_CATS     = <?php echo json_encode($categories, JSON_UNESCAPED_UNICODE); ?> || [];
+        const ALL_VARIANTS = <?php echo json_encode($variants, JSON_UNESCAPED_UNICODE); ?> || {};
+        const CSRF_TOKEN   = <?php echo json_encode($_SESSION['csrf_token']); ?>;
+
+        var _scheduleAllDays = <?php echo json_encode(array_keys($days_of_week), JSON_UNESCAPED_UNICODE); ?>;
+        var _scheduleAllAbbr = <?php echo json_encode(array_values($days_of_week), JSON_UNESCAPED_UNICODE); ?>;
+
+        function escAttr(s) {
+            return String(s ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
         }
 
-        document.querySelectorAll('input[type="file"]').forEach(setupImagePreview);
-
-        // Image Preview for URL Input
-        function setupImageUrlPreview(input) {
-            input.addEventListener('input', function(e) {
-                const url = e.target.value;
-                if (url) {
-                    const preview = document.createElement('img');
-                    preview.style.maxWidth = '100%';
-                    preview.style.maxHeight = '200px';
-                    preview.style.objectFit = 'contain';
-                    preview.style.borderRadius = '10px';
-                    preview.style.marginBottom = '15px';
-                    preview.src = url;
-                    preview.onerror = () => preview.src = 'https://via.placeholder.com/150?text=Imagen+No+Disponible';
-                    const existingPreview = input.parentNode.querySelector('img:not([src*="Uploads"])');
-                    if (existingPreview) existingPreview.remove();
-                    input.parentNode.insertBefore(preview, input.nextSibling);
-                }
-            });
-        }
-
-        document.querySelectorAll('input[name="image_url"]').forEach(setupImageUrlPreview);
-
-        // Days Selector Toggle
-        function setupDaysSelector(selector) {
-            const toggles = selector.querySelectorAll('.day-toggle');
-            const inputs = selector.parentNode.querySelectorAll('input[name="visible_days[]"]');
-            toggles.forEach(toggle => {
-                toggle.addEventListener('click', () => {
-                    toggle.classList.toggle('active');
-                    const day = toggle.dataset.day;
-                    const input = Array.from(inputs).find(inp => inp.value === day);
-                    if (input) input.disabled = !toggle.classList.contains('active');
-                });
-                toggle.addEventListener('keydown', (e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        toggle.click();
-                    }
-                });
-            });
-        }
-
-        document.querySelectorAll('.days-selector').forEach(setupDaysSelector);
-
-        // Option Toggles (Visible, Vegan, Requires Pizza, Weekly Special, Secret Menu)
+        // ── Toggles de opciones (acotados siempre a SU propio formulario: Add o Modal Edit) ──
         function setupOptionToggle(selector) {
             const toggle = selector.querySelector('.option-toggle');
-            const input = selector.parentNode.querySelector('input[type="hidden"]');
-            if (toggle && input) {
-                toggle.addEventListener('click', () => {
-                    toggle.classList.toggle('active');
-                    input.disabled = !toggle.classList.contains('active');
-                    
-                    // Mostrar/ocultar el campo de texto para destacado
-                    if (toggle.dataset.option === 'is_weekly_special') {
-                        const textContainer = document.getElementById('weekly_special_text_container');
-                        if (textContainer) {
-                            textContainer.style.display = toggle.classList.contains('active') ? 'block' : 'none';
-                        }
-                        
-                        // Si activamos destacado, desactivar carta secreta
-                        if (toggle.classList.contains('active')) {
-                            const secretMenuToggle = document.querySelector('[data-option="is_secret_menu"]');
-                            const secretMenuInput = document.querySelector('input[name="is_secret_menu"][type="hidden"]');
-                            if (secretMenuToggle && secretMenuToggle.classList.contains('active')) {
-                                secretMenuToggle.classList.remove('active');
-                                secretMenuInput.disabled = true;
-                            }
-                        }
-                    }
-                    
-                    // Si es carta secreta, deshabilitar el campo de texto destacado
-                    if (toggle.dataset.option === 'is_secret_menu') {
-                        const weeklySpecialToggle = document.querySelector('[data-option="is_weekly_special"]');
-                        const weeklySpecialInput = document.querySelector('input[name="is_weekly_special"][type="hidden"]');
-                        const weeklySpecialText = document.querySelector('input[name="weekly_special_text"]');
-                        
-                        if (toggle.classList.contains('active')) {
-                            // Si activamos carta secreta, forzar el texto y deshabilitar edición
-                            if (weeklySpecialText) {
-                                weeklySpecialText.value = 'Carta Secreta!';
-                                weeklySpecialText.disabled = true;
-                            }
-                            // Desactivar el toggle de destacado si está activo
-                            if (weeklySpecialToggle && weeklySpecialToggle.classList.contains('active')) {
-                                weeklySpecialToggle.classList.remove('active');
-                                weeklySpecialInput.disabled = true;
-                                
-                                // Ocultar el campo de texto destacado
-                                const textContainer = document.getElementById('weekly_special_text_container');
-                                if (textContainer) {
-                                    textContainer.style.display = 'none';
-                                }
-                            }
-                        } else {
-                            // Si desactivamos carta secreta, habilitar edición del texto
-                            if (weeklySpecialText) {
-                                weeklySpecialText.disabled = false;
-                            }
-                        }
-                    }
-                });
-                toggle.addEventListener('keydown', (e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        toggle.click();
-                    }
-                });
-            }
-        }
+            const input  = selector.parentNode.querySelector('input[type="hidden"]');
+            const form   = selector.closest('form');
+            if (!toggle || !input || !form) return;
 
+            toggle.addEventListener('click', () => {
+                toggle.classList.toggle('active');
+                const isActive = toggle.classList.contains('active');
+                input.disabled = !isActive;
+
+                if (toggle.dataset.option === 'is_weekly_special') {
+                    const textWrap = form.querySelector('.weekly-special-text-wrap');
+                    if (textWrap) {
+                        textWrap.style.display = isActive ? 'block' : 'none';
+                    }
+                }
+            });
+
+            toggle.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    toggle.click();
+                }
+            });
+        }
         document.querySelectorAll('.toggle-selector').forEach(setupOptionToggle);
 
-        // Add Sub-Item
-        function addSubItem(containerId) {
-            const container = document.getElementById(containerId);
-            if (container) {
-                const subItemDiv = document.createElement('div');
-                subItemDiv.className = 'sub-item';
-                subItemDiv.innerHTML = `
-                    <select name="sub_item_ids[]">
-                        <option value="">Selecciona un producto</option>
-                        <?php foreach ($menu_items as $sub_item): ?>
-                            <option value="<?php echo $sub_item['id']; ?>"><?php echo htmlspecialchars($sub_item['name']); ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                    <input type="number" name="sub_item_quantities[]" placeholder="Cantidad" min="1" value="1">
-                    <input type="checkbox" name="sub_item_required[]" value="1">
-                    <label>Requerido</label>
-                    <button type="button" onclick="this.parentElement.remove()">Eliminar</button>
-                `;
-                container.appendChild(subItemDiv);
-            }
+        function setupImageUrlPreview(input) {
+            if (!input) return;
+            input.addEventListener('input', function(e) {
+                const url = e.target.value.trim();
+                const existingPreview = input.parentNode.querySelector('img.url-preview-img');
+                if (existingPreview) existingPreview.remove();
+                if (url && /^https?:\/\//i.test(url)) {
+                    const preview = document.createElement('img');
+                    preview.className = 'url-preview-img';
+                    preview.style.cssText = 'max-width:100%;max-height:160px;object-fit:contain;border-radius:8px;margin:8px 0;display:block;';
+                    preview.src = url;
+                    input.parentNode.insertBefore(preview, input.nextSibling);
+                }
+            });
         }
+        document.querySelectorAll('input[name="image_url"]').forEach(setupImageUrlPreview);
 
-        // ── Variantes con precio propio ───────────────────────────────────
-        function escAttr(s) {
-            return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-        }
+        // ── Variantes con precio propio ──
         function variantRowHtml(name = '', price = '', desc = '') {
             return `
                 <div class="variant-row" style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap;align-items:center;">
-                    <input type="text"   name="variant_names[]"        placeholder="Nombre (Muzza)"      value="${escAttr(name)}"  style="flex:1;min-width:120px;">
-                    <input type="number" name="variant_prices[]"  step="0.01" min="0.01" placeholder="Precio" value="${escAttr(price)}" style="width:100px;">
-                    <input type="text"   name="variant_descriptions[]" placeholder="Descripción (opcional)" value="${escAttr(desc)}" style="flex:2;min-width:140px;">
-                    <button type="button" onclick="this.parentElement.remove()">Eliminar</button>
+                    <input type="text"   name="variant_names[]"        placeholder="Nombre (ej. Queso Azul)" value="${escAttr(name)}"  style="flex:1;min-width:130px;max-width:none;">
+                    <input type="number" name="variant_prices[]"       step="0.01" min="0.01" placeholder="Precio" value="${escAttr(price)}" style="width:110px;max-width:110px;">
+                    <input type="text"   name="variant_descriptions[]" placeholder="Descripción (opcional)" value="${escAttr(desc)}" style="flex:2;min-width:150px;max-width:none;">
+                    <button type="button" onclick="this.parentElement.remove()" style="padding:7px 12px;font-size:13px;background:#6b7280;border-color:#4b5563;box-shadow:none;">✕</button>
                 </div>`;
         }
         function addVariantRow(containerId) {
@@ -2432,41 +1492,25 @@ $days_of_week = [
             container.appendChild(div.firstElementChild);
         }
 
-        // Client-side Form Validation
+        // ── Validaciones ──
         function validateItemForm(form) {
-            const name = form.querySelector('input[name="name"]').value.trim();
-            const price = parseFloat(form.querySelector('input[name="price"]').value);
-            const secondary_price = form.querySelector('input[name="secondary_price"]').value;
+            const name     = form.querySelector('input[name="name"]').value.trim();
+            const price    = parseFloat(form.querySelector('input[name="price"]').value);
             const category = form.querySelector('select[name="category_id"]').value;
-            const imageUrl = form.querySelector('input[name="image_url"]').value;
+            const imageUrl = form.querySelector('input[name="image_url"]').value.trim();
 
-            if (!name) {
-                alert('El nombre del producto es obligatorio.');
-                return false;
-            }
-            if (isNaN(price) || price <= 0) {
-                alert('El precio debe ser un número mayor que 0.');
-                return false;
-            }
-            if (secondary_price && (isNaN(secondary_price) || secondary_price <= 0)) {
-                alert('El precio secundario debe ser un número mayor que 0 si se especifica.');
-                return false;
-            }
-            if (!category) {
-                alert('Debes seleccionar una categoría.');
-                return false;
-            }
-            const existingImage = form.querySelector('input[name="existing_image"]')?.value || '';
-            if (imageUrl && imageUrl !== existingImage && !/^(https?:\/\/)/i.test(imageUrl)) {
-                alert('La URL de la imagen no es válida.');
+            if (!name) { alert('El nombre del producto es obligatorio.'); return false; }
+            if (isNaN(price) || price <= 0) { alert('El precio debe ser mayor que 0.'); return false; }
+            if (!category) { alert('Debes seleccionar una categoría.'); return false; }
+            if (imageUrl && !/^https?:\/\//i.test(imageUrl)) {
+                alert('La URL externa de la imagen debe comenzar con http:// o https://');
                 return false;
             }
             return true;
         }
 
         function validateCategoryForm(form) {
-            const name = form.querySelector('input[name="category_name"]').value.trim();
-            if (!name) {
+            if (!form.querySelector('input[name="category_name"]').value.trim()) {
                 alert('El nombre de la categoría es obligatorio.');
                 return false;
             }
@@ -2474,24 +1518,120 @@ $days_of_week = [
         }
 
         function validateBusinessHoursForm(form) {
-            const day = form.querySelector('select[name="day_of_week"]').value;
+            const day       = form.querySelector('select[name="day_of_week"]').value;
             const startTime = form.querySelector('input[name="start_time"]').value;
-            const endTime = form.querySelector('input[name="end_time"]').value;
-
-            if (!day) {
-                alert('Debes seleccionar un día.');
+            const endTime   = form.querySelector('input[name="end_time"]').value;
+            if (!day || !startTime || !endTime) {
+                alert('Día, hora de inicio y hora de fin son obligatorios.');
                 return false;
             }
-            if (!startTime || !endTime) {
-                alert('Las horas de inicio y fin son obligatorias.');
+            if (startTime === endTime) {
+                alert('La hora de inicio y fin no pueden ser exactamente la misma.');
                 return false;
             }
             return true;
         }
 
-        // ── Drag & drop para reordenar categorías en "Administrar Categorías" ──────
+        // ── Bulk Editor: -$1000 / +$1000, eliminar, visibilidad y drag & drop ──
+        document.querySelectorAll('.bulk-raise-btn').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var catId  = btn.dataset.category;
+                var amount = parseFloat(btn.dataset.amount);
+                var tbody  = document.querySelector('.bulk-sortable[data-category="' + catId + '"]');
+                if (!tbody) return;
+                tbody.querySelectorAll('input[name^="prices["]').forEach(function(input) {
+                    var current = parseFloat(input.value) || 0;
+                    var result  = current + amount;
+                    input.value = (result < 0.01 ? 0.01 : result).toFixed(2);
+                });
+            });
+        });
+
         (function() {
-            var catList = document.getElementById('category-sortable');
+            var bulkCatContainer = document.getElementById('bulk-cat-sortable');
+            if (!bulkCatContainer) return;
+            Sortable.create(bulkCatContainer, {
+                handle: '.bulk-cat-handle',
+                animation: 150,
+                onEnd: async function() {
+                    var blocks = Array.from(bulkCatContainer.querySelectorAll('.bulk-cat-block[data-cat-id]'));
+                    var order  = blocks.map(function(b) { return b.dataset.catId; });
+                    var fd = new FormData();
+                    fd.append('action',     'reorder_categories');
+                    fd.append('order',      JSON.stringify(order));
+                    fd.append('csrf_token', CSRF_TOKEN);
+                    try {
+                        var res  = await fetch('editor.php', { method: 'POST', body: fd });
+                        var data = await res.json();
+                        if (!data.ok) alert('Error al guardar orden de categorías: ' + (data.error || ''));
+                    } catch (e) {
+                        alert('Error de conexión al guardar el orden de categorías.');
+                    }
+                }
+            });
+        })();
+
+        document.querySelectorAll('.bulk-delete-btn').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var name = btn.dataset.name || 'este producto';
+                if (!confirm('¿Marcar "' + name + '" para eliminar al guardar los precios?')) return;
+                var row = btn.closest('tr');
+                var chk = row.querySelector('.bulk-delete-input');
+                chk.disabled = false;
+                chk.checked  = true;
+                row.style.opacity = '0.35';
+                btn.disabled = true;
+            });
+        });
+
+        document.querySelectorAll('.bulk-vis-btn').forEach(function(btn) {
+            btn.addEventListener('click', async function() {
+                var fd = new FormData();
+                fd.append('action',     'toggle_visibility');
+                fd.append('id',         btn.dataset.id);
+                fd.append('csrf_token', CSRF_TOKEN);
+                try {
+                    var res  = await fetch('editor.php', { method: 'POST', body: fd });
+                    var data = await res.json();
+                    if (data.ok) {
+                        var row = btn.closest('tr');
+                        btn.textContent = data.is_visible ? '👁' : '🚫';
+                        btn.title = data.is_visible ? 'Visible — clic para ocultar' : 'Oculto — clic para mostrar';
+                        row.style.opacity = data.is_visible ? '' : '0.5';
+                    } else {
+                        alert('Error al cambiar visibilidad: ' + (data.error || ''));
+                    }
+                } catch (e) {
+                    alert('Error de conexión al cambiar visibilidad.');
+                }
+            });
+        });
+
+        document.querySelectorAll('.bulk-sortable').forEach(function(tbody) {
+            Sortable.create(tbody, {
+                handle: '.bulk-drag-handle',
+                animation: 150,
+                onEnd: async function(evt) {
+                    var rows  = Array.from(evt.to.querySelectorAll('tr[data-id]'));
+                    var order = rows.map(function(r) { return r.dataset.id; });
+                    var fd = new FormData();
+                    fd.append('action',     'reorder_items');
+                    fd.append('order',      JSON.stringify(order));
+                    fd.append('csrf_token', CSRF_TOKEN);
+                    try {
+                        var res  = await fetch('editor.php', { method: 'POST', body: fd });
+                        var data = await res.json();
+                        if (!data.ok) alert('Error al guardar orden: ' + (data.error || ''));
+                    } catch (e) {
+                        alert('Error de conexión al guardar el orden.');
+                    }
+                }
+            });
+        });
+
+        // ── Drag & drop en Administrar Categorías ──
+        (function() {
+            var catList    = document.getElementById('category-sortable');
             var btnConfirm = document.getElementById('btn-confirm-cat-order');
             var statusSpan = document.getElementById('cat-order-status');
             if (!catList || !btnConfirm) return;
@@ -2499,37 +1639,33 @@ $days_of_week = [
             Sortable.create(catList, {
                 handle: '.cat-drag-handle',
                 animation: 150,
-                ghostClass: 'sortable-ghost',
                 onEnd: function() {
-                    // Mostrar botón confirmar cuando se arrastra algo
                     btnConfirm.style.display = 'inline-block';
                     statusSpan.textContent = '';
                 }
             });
 
             btnConfirm.addEventListener('click', async function() {
-                var items = Array.from(catList.querySelectorAll('li[data-id]'));
-                var order = items.map(function(li) { return li.dataset.id; });
-                var csrf  = document.querySelector('input[name="csrf_token"]').value;
+                var order = Array.from(catList.querySelectorAll('li[data-id]')).map(li => li.dataset.id);
                 btnConfirm.disabled = true;
                 btnConfirm.textContent = 'Guardando…';
                 var fd = new FormData();
                 fd.append('action',     'reorder_categories');
                 fd.append('order',      JSON.stringify(order));
-                fd.append('csrf_token', csrf);
+                fd.append('csrf_token', CSRF_TOKEN);
                 try {
-                    var res  = await fetch('editor.php', { method:'POST', body: fd });
+                    var res  = await fetch('editor.php', { method: 'POST', body: fd });
                     var data = await res.json();
                     if (data.ok) {
                         btnConfirm.style.display = 'none';
                         statusSpan.style.color = '#28a745';
                         statusSpan.textContent = '✔ Orden guardado correctamente';
-                        setTimeout(function() { statusSpan.textContent = ''; }, 3000);
+                        setTimeout(() => { statusSpan.textContent = ''; }, 3000);
                     } else {
                         statusSpan.style.color = '#cc0000';
                         statusSpan.textContent = 'Error: ' + (data.error || 'desconocido');
                     }
-                } catch(e) {
+                } catch (e) {
                     statusSpan.style.color = '#cc0000';
                     statusSpan.textContent = 'Error de conexión.';
                 }
@@ -2538,210 +1674,162 @@ $days_of_week = [
             });
         })();
 
-        // Drag and Drop with SortableJS
+        // ── Drag & drop en grilla de Productos Existentes (arreglado: devuelve JSON real) ──
         const itemGrid = document.getElementById('item-grid');
         if (itemGrid) {
             new Sortable(itemGrid, {
                 animation: 150,
-                ghostClass: 'sortable-ghost',
-                onEnd: function(evt) {
+                onEnd: async function() {
                     const items = Array.from(itemGrid.children).map(item => item.dataset.id);
-                    fetch(window.location.href, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/x-www-form-urlencoded',
-                        },
-                        body: `action=update_order&csrf_token=<?php echo $_SESSION['csrf_token']; ?>&order=${encodeURIComponent(JSON.stringify(items))}`
-                    }).then(response => {
-                        if (response.ok) {
-                            console.log('Orden actualizado');
-                        } else {
-                            console.error('Error al actualizar el orden');
-                        }
-                    });
+                    const fd = new FormData();
+                    fd.append('action',     'update_order');
+                    fd.append('order',      JSON.stringify(items));
+                    fd.append('csrf_token', CSRF_TOKEN);
+                    try {
+                        const res  = await fetch('editor.php', { method: 'POST', body: fd });
+                        const data = await res.json();
+                        if (!data.ok) alert('Error al actualizar el orden: ' + (data.error || ''));
+                    } catch (e) {
+                        console.error('Error al actualizar el orden', e);
+                    }
                 }
             });
         }
 
-        // Modal Handling
+        // ── Modal de Edición de Producto (100% escapado contra comillas simples y dobles) ──
         function openModal(itemId) {
-            const modal = document.getElementById('edit-item-modal');
+            const modal        = document.getElementById('edit-item-modal');
             const modalContent = document.getElementById('modal-form-content');
-            const item = <?php echo json_encode($menu_items); ?>.find(i => i.id == itemId);
-            const subProducts = <?php echo json_encode($sub_products); ?>[itemId] || [];
-            const itemVariants = <?php echo json_encode($variants); ?>[itemId] || [];
+            const item         = ALL_ITEMS.find(i => String(i.id) === String(itemId));
+            const itemVariants = ALL_VARIANTS[itemId] || [];
+            if (!item) return;
 
-            if (item) {
-                modalContent.innerHTML = `
-                    <h3>Editar ${item.name}</h3>
-                    <form method="POST" enctype="multipart/form-data" class="modal-form" onsubmit="return validateItemForm(this)">
-                        <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
-                        <input type="hidden" name="action" value="update_item">
-                        <input type="hidden" name="id" value="${item.id}">
-                        <input type="hidden" name="existing_image" value="${item.image_url}">
-                        <img src="${item.image_url || 'https://via.placeholder.com/150?text=Sin+Imagen'}" alt="${item.name}">
-                        <input type="text" name="name" value="${item.name}" required>
-                        <input type="number" step="0.01" name="price" value="${item.price}" min="0.01" required>
-                        <input type="number" step="0.01" name="secondary_price" value="${item.secondary_price || ''}" placeholder="Precio Secundario (Para tu pizza, opcional)" min="0.01">
-                        <select name="category_id" required>
-                            <?php foreach ($categories as $category): ?>
-                                <option value="<?php echo $category['id']; ?>" ${item.category_id == <?php echo $category['id']; ?> ? 'selected' : ''}>
-                                    <?php echo htmlspecialchars($category['name']); ?>
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
-                        <textarea name="description">${item.description || ''}</textarea>
-                        <label>Imagen (Subir archivo)</label>
-                        <input type="file" name="image" accept="image/*" class="crop-file-input">
-                        <input type="hidden" name="cropped_image_data" class="cropped-data-field">
-                        <div class="crop-preview-wrap" style="margin:4px 0 8px;min-height:0;"></div>
-                        <label>Imagen (URL)</label>
-                        <input type="url" name="image_url" value="${/^https?:\/\//i.test(item.image_url || '') ? item.image_url : ''}" placeholder="https://example.com/image.jpg">
-                        <div class="toggle-group">
-                            <div class="toggle-inputs">
-                                <label>Visible en la Web:</label>
-                                <div class="toggle-selector" data-input="is_visible">
-                                    <div class="option-toggle ${item.is_visible ? 'active' : ''}" data-option="is_visible" tabindex="0" role="button" aria-label="Activar visibilidad en la web">V</div>
-                                </div>
-                                <input type="hidden" name="is_visible" value="1" ${!item.is_visible ? 'disabled' : ''}>
+            const isVis    = Number(item.is_visible) === 1;
+            const isVeg    = Number(item.has_vegan_option) === 1;
+            const isDest   = Number(item.is_weekly_special) === 1;
+            const isSecret = Number(item.is_secret_menu) === 1;
+            const externalImgUrl = /^https?:\/\//i.test(item.image_url || '') ? item.image_url : '';
+            const catOptionsHtml = ALL_CATS.map(c =>
+                `<option value="${Number(c.id)}" ${Number(item.category_id) === Number(c.id) ? 'selected' : ''}>${escAttr(c.name)}</option>`
+            ).join('');
+
+            modalContent.innerHTML = `
+                <h3 style="margin-bottom:12px;font-family:var(--font-display);color:var(--rojo);font-size:1.5rem;">Editar: ${escAttr(item.name)}</h3>
+                <form method="POST" enctype="multipart/form-data" class="modal-form" onsubmit="return validateItemForm(this)">
+                    <input type="hidden" name="csrf_token" value="${escAttr(CSRF_TOKEN)}">
+                    <input type="hidden" name="action" value="update_item">
+                    <input type="hidden" name="id" value="${Number(item.id)}">
+                    <input type="hidden" name="existing_image" value="${escAttr(item.image_url || '')}">
+                    <img class="current-item-img" src="${escAttr(item.image_url || 'https://via.placeholder.com/150?text=Sin+Imagen')}" alt="${escAttr(item.name)}">
+
+                    <label>Nombre:</label>
+                    <input type="text" name="name" value="${escAttr(item.name)}" required>
+
+                    <label>Precio ($):</label>
+                    <input type="number" step="0.01" name="price" value="${escAttr(item.price)}" min="0.01" required>
+
+                    <label>Categoría:</label>
+                    <select name="category_id" required>${catOptionsHtml}</select>
+
+                    <label>Descripción / Ingredientes:</label>
+                    <textarea name="description" rows="3">${escAttr(item.description || '')}</textarea>
+
+                    <label>Cambiar Imagen (Subir archivo y recortar 1:1):</label>
+                    <input type="file" name="image" accept="image/*" class="crop-file-input">
+                    <input type="hidden" name="cropped_image_data" class="cropped-data-field">
+                    <div class="crop-preview-wrap" style="margin:4px 0 8px;min-height:0;"></div>
+
+                    <label>O URL externa de imagen:</label>
+                    <input type="url" name="image_url" value="${escAttr(externalImgUrl)}" placeholder="https://...">
+
+                    <div class="toggle-group">
+                        <div class="toggle-inputs">
+                            <label>Visible:</label>
+                            <div class="toggle-selector">
+                                <div class="option-toggle ${isVis ? 'active' : ''}" data-option="is_visible" tabindex="0" role="button">V</div>
                             </div>
-                            <div class="toggle-inputs">
-                                <label>Ofrece Opción Vegana:</label>
-                                <div class="toggle-selector" data-input="has_vegan_option">
-                                    <div class="option-toggle ${item.has_vegan_option ? 'active' : ''}" data-option="has_vegan_option" tabindex="0" role="button" aria-label="Activar opción vegana">VG</div>
-                                </div>
-                                <input type="hidden" name="has_vegan_option" value="1" ${!item.has_vegan_option ? 'disabled' : ''}>
-                            </div>
-                            <div class="toggle-inputs">
-                                <label>Requiere Pizza:</label>
-                                <div class="toggle-selector" data-input="requires_pizza">
-                                    <div class="option-toggle ${item.requires_pizza ? 'active' : ''}" data-option="requires_pizza" tabindex="0" role="button" aria-label="Activar requerimiento de pizza">P</div>
-                                </div>
-                                <input type="hidden" name="requires_pizza" value="1" ${!item.requires_pizza ? 'disabled' : ''}>
-                            </div>
-                            <div class="toggle-inputs">
-                                <label>Destacado:</label>
-                                <div class="toggle-selector" data-input="is_weekly_special">
-                                    <div class="option-toggle ${item.is_weekly_special ? 'active' : ''}" data-option="is_weekly_special" tabindex="0" role="button" aria-label="Activar destacado">D</div>
-                                </div>
-                                <input type="hidden" name="is_weekly_special" value="1" ${!item.is_weekly_special ? 'disabled' : ''}>
-                            </div>
-                            <div class="toggle-inputs">
-                                <label>Carta Secreta:</label>
-                                <div class="toggle-selector" data-input="is_secret_menu">
-                                    <div class="option-toggle ${item.is_secret_menu ? 'active' : ''}" data-option="is_secret_menu" tabindex="0" role="button" aria-label="Activar carta secreta">CS</div>
-                                </div>
-                                <input type="hidden" name="is_secret_menu" value="1" ${!item.is_secret_menu ? 'disabled' : ''}>
-                            </div>
+                            <input type="hidden" name="is_visible" value="1" ${!isVis ? 'disabled' : ''}>
                         </div>
-                        <div id="weekly_special_text_container_${item.id}" style="${item.is_weekly_special ? '' : 'display: none;'}">
-                            <input type="text" name="weekly_special_text" class="weekly-special-text" value="${item.weekly_special_text || '¡Pizza de la semana!'}" placeholder="Texto Destacado" ${item.is_secret_menu ? 'disabled' : ''}>
-                        </div>
-                        <div class="schedules-section">
-                            <label style="font-weight:700;font-size:1rem;color:#333;display:block;margin-bottom:8px;">
-                                Franjas de disponibilidad:
-                            </label>
-                            <div class="schedules-container" id="schedules-edit-${item.id}"></div>
-                            <button type="button" class="btn-add-schedule"
-                                onclick="addScheduleRow(document.getElementById('schedules-edit-${item.id}'), null, null, [], '', '')">
-                                + Agregar franja horaria
-                            </button>
-                        </div>
-                        <input type="number" name="required_selections" value="${item.required_selections || ''}" placeholder="Selecciones Requeridas (ej. 3 para Combo 3 Pizzas)" min="0">
-                        <div class="sub-items-inputs">
-                            <label>Productos Incluidos (opcional):</label>
-                            <div id="sub-items-${item.id}">
-                                ${subProducts.map((sub, index) => `
-                                    <div class="sub-item">
-                                        <select name="sub_item_ids[]">
-                                            <option value="">Selecciona un producto</option>
-                                            <?php foreach ($menu_items as $menu_sub_item): ?>
-                                                <?php if ($menu_sub_item['id'] != $item['id']): ?>
-                                                    <option value="<?php echo $menu_sub_item['id']; ?>" ${sub.id == <?php echo $menu_sub_item['id']; ?> ? 'selected' : ''}>
-                                                        <?php echo htmlspecialchars($menu_sub_item['name']); ?>
-                                                    </option>
-                                                <?php endif; ?>
-                                            <?php endforeach; ?>
-                                        </select>
-                                        <input type="number" name="sub_item_quantities[]" value="${sub.quantity}" placeholder="Cantidad" min="1">
-                                        <input type="checkbox" name="sub_item_required[${index}]" value="1" ${sub.is_required ? 'checked' : ''}>
-                                        <label>Requerido${sub.is_required ? ' <span class="required-label">(Obligatorio)</span>' : ''}</label>
-                                        <button type="button" onclick="this.parentElement.remove()">Eliminar</button>
-                                    </div>
-                                `).join('')}
-                                <div class="sub-item">
-                                    <select name="sub_item_ids[]">
-                                        <option value="">Selecciona un producto</option>
-                                        <?php foreach ($menu_items as $menu_sub_item): ?>
-                                            <?php if ($menu_sub_item['id'] != $item['id']): ?>
-                                                <option value="<?php echo $menu_sub_item['id']; ?>">
-                                                    <?php echo htmlspecialchars($menu_sub_item['name']); ?>
-                                                </option>
-                                            <?php endif; ?>
-                                        <?php endforeach; ?>
-                                    </select>
-                                    <input type="number" name="sub_item_quantities[]" placeholder="Cantidad" min="1" value="1">
-                                    <input type="checkbox" name="sub_item_required[]" value="1">
-                                    <label>Requerido</label>
-                                    <button type="button" onclick="this.parentElement.remove()">Eliminar</button>
-                                </div>
+                        <div class="toggle-inputs">
+                            <label>Opción Vegana:</label>
+                            <div class="toggle-selector">
+                                <div class="option-toggle ${isVeg ? 'active' : ''}" data-option="has_vegan_option" tabindex="0" role="button">VG</div>
                             </div>
-                            <button type="button" onclick="addSubItem('sub-items-${item.id}')">Agregar otro sub-producto</button>
+                            <input type="hidden" name="has_vegan_option" value="1" ${!isVeg ? 'disabled' : ''}>
                         </div>
-                        <div class="variants-inputs" style="margin:12px 0;padding:12px;border:1px dashed #aaa;border-radius:8px;">
-                            <label style="font-weight:700;display:block;margin-bottom:6px;">Variantes con precio propio (opcional):</label>
-                            <p style="font-size:.85rem;color:#666;margin:0 0 8px;">Ej. Muzza / Fugazzeta / Arrabbiata, cada una con su precio.</p>
-                            <div id="variants-${item.id}">
-                                ${itemVariants.map(v => variantRowHtml(v.name, v.price, v.description || '')).join('')}
+                        <div class="toggle-inputs">
+                            <label>Destacado (cinta):</label>
+                            <div class="toggle-selector">
+                                <div class="option-toggle ${isDest ? 'active' : ''}" data-option="is_weekly_special" tabindex="0" role="button">D</div>
                             </div>
-                            <button type="button" onclick="addVariantRow('variants-${item.id}')">+ Agregar variante</button>
+                            <input type="hidden" name="is_weekly_special" value="1" ${!isDest ? 'disabled' : ''}>
                         </div>
-                        <input type="number" name="display_order" value="${item.display_order}" required>
-                        <button type="submit">Actualizar</button>
-                        <button type="submit" name="action" value="delete_item">Eliminar</button>
-                    </form>
-                `;
-                modal.style.display = 'flex';
-                // Setup event listeners for the modal form
-                const form = modalContent.querySelector('form');
-                // Poblar franjas de horario existentes
-                (function() {
-                    var schedContainer = form.querySelector('.schedules-container');
-                    if (!schedContainer) return;
-                    var rawSchedules = [];
-                    try {
-                        var parsed = JSON.parse(item.visible_days || '[]');
-                        if (Array.isArray(parsed) && parsed.length > 0) {
-                            if (typeof parsed[0] === 'object' && parsed[0] !== null && 'start' in parsed[0]) {
-                                rawSchedules = parsed;
-                            } else if (typeof parsed[0] === 'string') {
-                                rawSchedules = [{ days: parsed, start: item.visible_start_time || '', end: item.visible_end_time || '' }];
-                            }
+                        <div class="toggle-inputs">
+                            <label>Carta Secreta:</label>
+                            <div class="toggle-selector">
+                                <div class="option-toggle ${isSecret ? 'active' : ''}" data-option="is_secret_menu" tabindex="0" role="button">CS</div>
+                            </div>
+                            <input type="hidden" name="is_secret_menu" value="1" ${!isSecret ? 'disabled' : ''}>
+                        </div>
+                    </div>
+
+                    <div class="weekly-special-text-wrap" style="${isDest ? 'display:block;' : 'display:none;'}">
+                        <label>Texto de la cinta destacada:</label>
+                        <input type="text" name="weekly_special_text" class="weekly-special-text" value="${escAttr(item.weekly_special_text || '¡Pizza de la semana!')}" placeholder="¡Pizza de la semana!">
+                    </div>
+
+                    <div class="schedules-section" style="margin-top:8px;">
+                        <label>Franjas de disponibilidad:</label>
+                        <div class="schedules-container" id="schedules-edit-${Number(item.id)}"></div>
+                        <button type="button" class="btn-add-schedule"
+                            onclick="addScheduleRow(document.getElementById('schedules-edit-${Number(item.id)}'), null, null, [], '', '')">
+                            + Agregar franja horaria
+                        </button>
+                    </div>
+
+                    <div class="variants-inputs" style="margin:12px 0;padding:12px;border:1px dashed #aaa;border-radius:8px;background:#fff;">
+                        <label style="margin-top:0;">Variantes con precio propio (opcional):</label>
+                        <div id="variants-${Number(item.id)}">
+                            ${itemVariants.map(v => variantRowHtml(v.name, v.price, v.description || '')).join('')}
+                        </div>
+                        <button type="button" class="btn-add-schedule" onclick="addVariantRow('variants-${Number(item.id)}')">+ Agregar variante</button>
+                    </div>
+
+                    <label>Orden de visualización:</label>
+                    <input type="number" name="display_order" value="${Number(item.display_order || 0)}" required style="max-width:140px;">
+
+                    <div style="display:flex;gap:10px;margin-top:14px;">
+                        <button type="submit">Guardar cambios</button>
+                        <button type="submit" name="action" value="delete_item" onclick="return confirm('¿Seguro que querés eliminar este producto?');" style="background:#6b7280;border-color:#4b5563;box-shadow:2px 2px 0 #4b5563;">Eliminar producto</button>
+                    </div>
+                </form>
+            `;
+            modal.style.display = 'flex';
+
+            const form = modalContent.querySelector('form');
+            const schedContainer = form.querySelector('.schedules-container');
+            if (schedContainer) {
+                let rawSchedules = [];
+                try {
+                    const parsed = JSON.parse(item.visible_days || '[]');
+                    if (Array.isArray(parsed) && parsed.length > 0) {
+                        if (typeof parsed[0] === 'object' && parsed[0] !== null && 'start' in parsed[0]) {
+                            rawSchedules = parsed;
+                        } else if (typeof parsed[0] === 'string') {
+                            rawSchedules = [{ days: parsed, start: item.visible_start_time || '', end: item.visible_end_time || '' }];
                         }
-                    } catch(e) {}
-                    if (rawSchedules.length === 0) {
-                        rawSchedules = [{ days: _scheduleAllDays, start: '', end: '' }];
                     }
-                    rawSchedules.forEach(function(s) {
-                        addScheduleRow(schedContainer, null, null, s.days || [], s.start || '', s.end || '');
-                    });
-                })();
-                // Setup event listeners for the modal form
-                setupImagePreview(form.querySelector('input[type="file"]'));
-                setupImageUrlPreview(form.querySelector('input[name="image_url"]'));
-                form.querySelectorAll('.toggle-selector').forEach(setupOptionToggle);
-                
-                // Configurar el evento para mostrar/ocultar el campo de texto destacado
-                const weeklySpecialToggle = form.querySelector('[data-option="is_weekly_special"]');
-                if (weeklySpecialToggle) {
-                    weeklySpecialToggle.addEventListener('click', () => {
-                        const textContainer = document.getElementById(`weekly_special_text_container_${item.id}`);
-                        if (textContainer) {
-                            textContainer.style.display = weeklySpecialToggle.classList.contains('active') ? 'block' : 'none';
-                        }
-                    });
+                } catch (e) {}
+                if (rawSchedules.length === 0) {
+                    rawSchedules = [{ days: _scheduleAllDays, start: '', end: '' }];
                 }
+                rawSchedules.forEach(s => {
+                    addScheduleRow(schedContainer, null, null, s.days || [], s.start || '', s.end || '');
+                });
             }
+
+            setupImageUrlPreview(form.querySelector('input[name="image_url"]'));
+            form.querySelectorAll('.toggle-selector').forEach(setupOptionToggle);
         }
 
         function closeModal() {
@@ -2750,40 +1838,28 @@ $days_of_week = [
             document.getElementById('modal-form-content').innerHTML = '';
         }
 
-        // Open modal on item click
         document.querySelectorAll('.item-card').forEach(card => {
-            card.addEventListener('click', () => {
-                const itemId = card.dataset.id;
-                openModal(itemId);
-            });
+            card.addEventListener('click', () => openModal(card.dataset.id));
         });
 
-        // Close modal on outside click
         document.getElementById('edit-item-modal').addEventListener('click', (e) => {
-            if (e.target === document.getElementById('edit-item-modal')) {
-                closeModal();
-            }
+            if (e.target === document.getElementById('edit-item-modal')) closeModal();
         });
 
-        // Close modal with Escape key
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') {
-                closeModal();
-            }
+            if (e.key === 'Escape') closeModal();
         });
-        // ── Franjas de horario múltiples ──────────────────────────────────────────────
-        var _scheduleAllDays = <?php echo json_encode(array_keys($days_of_week)); ?>;
-        var _scheduleAllAbbr = <?php echo json_encode(array_values($days_of_week)); ?>;
 
+        // ── Franjas de disponibilidad por producto ──
         function addScheduleRow(container, allDays, allAbbr, activeDays, startVal, endVal) {
+            if (!container) return;
             allDays    = allDays  || _scheduleAllDays;
             allAbbr    = allAbbr  || _scheduleAllAbbr;
             activeDays = activeDays || allDays;
-            startVal   = startVal || '';
-            endVal     = endVal   || '';
+            startVal   = (startVal || '').slice(0, 5);
+            endVal     = (endVal   || '').slice(0, 5);
 
             var idx = container.querySelectorAll('.schedule-row').length;
-
             var row = document.createElement('div');
             row.className = 'schedule-row';
             row.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:#f9f9f9;border:1px solid #ddd;border-radius:10px;padding:10px 14px;margin-bottom:8px;';
@@ -2804,18 +1880,19 @@ $days_of_week = [
                 toggle.title = day;
                 toggle.tabIndex = 0;
                 toggle.style.cssText = 'width:32px;height:32px;font-size:13px;';
-                toggle.addEventListener('click', function() { toggle.classList.toggle('active'); });
-                toggle.addEventListener('keydown', function(e) {
-                    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle.click(); }
-                });
 
                 var hiddenDay = document.createElement('input');
                 hiddenDay.type = 'hidden';
                 hiddenDay.name = 'schedule_days[' + idx + '][]';
                 hiddenDay.value = day;
                 hiddenDay.disabled = !isActive;
+
                 toggle.addEventListener('click', function() {
+                    toggle.classList.toggle('active');
                     hiddenDay.disabled = !toggle.classList.contains('active');
+                });
+                toggle.addEventListener('keydown', function(e) {
+                    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle.click(); }
                 });
 
                 daysWrap.appendChild(toggle);
@@ -2825,7 +1902,7 @@ $days_of_week = [
 
             var startLabel = document.createElement('label');
             startLabel.textContent = 'Desde:';
-            startLabel.style.cssText = 'font-size:0.85rem;font-weight:600;color:#555;';
+            startLabel.style.cssText = 'font-size:0.85rem;font-weight:600;color:#555;margin:0;';
             row.appendChild(startLabel);
             var startInput = document.createElement('input');
             startInput.type = 'time';
@@ -2836,7 +1913,7 @@ $days_of_week = [
 
             var endLabel = document.createElement('label');
             endLabel.textContent = 'Hasta:';
-            endLabel.style.cssText = 'font-size:0.85rem;font-weight:600;color:#555;';
+            endLabel.style.cssText = 'font-size:0.85rem;font-weight:600;color:#555;margin:0;';
             row.appendChild(endLabel);
             var endInput = document.createElement('input');
             endInput.type = 'time';
@@ -2850,7 +1927,7 @@ $days_of_week = [
                 removeBtn.type = 'button';
                 removeBtn.textContent = '✕';
                 removeBtn.title = 'Eliminar esta franja';
-                removeBtn.style.cssText = 'background:none;border:1px solid #cc0000;color:#cc0000;border-radius:50%;width:28px;height:28px;cursor:pointer;font-size:14px;line-height:1;padding:0;flex-shrink:0;';
+                removeBtn.style.cssText = 'background:none;border:1px solid #cc0000;color:#cc0000;border-radius:50%;width:28px;height:28px;cursor:pointer;font-size:14px;line-height:1;padding:0;flex-shrink:0;box-shadow:none;';
                 removeBtn.addEventListener('click', function() { row.remove(); });
                 row.appendChild(removeBtn);
             }
@@ -2858,44 +1935,30 @@ $days_of_week = [
             container.appendChild(row);
         }
 
-        // Inicializar el formulario de agregar con una franja por defecto
-        (function() {
-            var c = document.getElementById('schedules-add');
-            if (c) {
-                addScheduleRow(c, _scheduleAllDays, _scheduleAllAbbr, [], '', '');
-            }
-        })();
-
+        addScheduleRow(document.getElementById('schedules-add'), _scheduleAllDays, _scheduleAllAbbr, [], '', '');
     </script>
-    <script>
-    // ══════════════════════════════════════════════════════════════════════
-    // Cropper.js — lógica global para recorte de imágenes 1:1
-    // Funciona tanto para el formulario de "Agregar" como para el modal de edición
-    // ══════════════════════════════════════════════════════════════════════
-    (function() {
-        var cropModal   = document.getElementById('crop-modal');
-        var cropImg     = document.getElementById('crop-image');
-        var btnConfirm  = document.getElementById('btn-crop-confirm');
-        var btnCancel   = document.getElementById('btn-crop-cancel');
-        var cropper     = null;
 
-        // Input de archivo activo y form al que pertenece
-        var activeFileInput  = null;
+    <script>
+    // ── Cropper.js 1:1 WebP ──
+    (function() {
+        var cropModal  = document.getElementById('crop-modal');
+        var cropImg    = document.getElementById('crop-image');
+        var btnConfirm = document.getElementById('btn-crop-confirm');
+        var btnCancel  = document.getElementById('btn-crop-cancel');
+        var cropper    = null;
+
+        var activeFileInput    = null;
         var activeCroppedField = null;
         var activePreviewWrap  = null;
 
         function openCropModal(fileInput, blob) {
             activeFileInput    = fileInput;
-            // Buscar los campos hidden y preview dentro del mismo form/container
-            var container = fileInput.closest('form') || fileInput.parentNode;
+            var container      = fileInput.closest('form') || fileInput.parentNode;
             activeCroppedField = container.querySelector('.cropped-data-field');
             activePreviewWrap  = container.querySelector('.crop-preview-wrap');
 
-            var url = URL.createObjectURL(blob);
-            cropImg.src = url;
+            cropImg.src = URL.createObjectURL(blob);
             cropModal.classList.add('open');
-
-            // Destruir cropper anterior si existe
             if (cropper) { cropper.destroy(); cropper = null; }
 
             cropImg.onload = function() {
@@ -2922,11 +1985,9 @@ $days_of_week = [
             cropImg.src = '';
         }
 
-        // Escuchar cualquier input[type=file] con clase crop-file-input
-        // (incluyendo los que se inyectan dinámicamente en el modal de edición)
         document.body.addEventListener('change', function(e) {
             var input = e.target;
-            if (!input.classList.contains('crop-file-input')) return;
+            if (!input.classList || !input.classList.contains('crop-file-input')) return;
             if (!input.files || !input.files[0]) return;
             var file = input.files[0];
             if (!file.type.startsWith('image/')) return;
@@ -2935,70 +1996,52 @@ $days_of_week = [
 
         btnConfirm.addEventListener('click', function() {
             if (!cropper || !activeCroppedField) return;
-            var canvas = cropper.getCroppedCanvas({ width: 800, height: 800, imageSmoothingQuality: 'high' });
-            var dataUrl = canvas.toDataURL('image/webp', 0.8);
+            var canvas  = cropper.getCroppedCanvas({ width: 800, height: 800, imageSmoothingQuality: 'high' });
+            var dataUrl = canvas.toDataURL('image/webp', 0.82);
 
-            // Guardar en el campo hidden
             activeCroppedField.value = dataUrl;
-
-            // Deshabilitar el input file para que el PHP no lo procese también
             if (activeFileInput) activeFileInput.disabled = true;
 
-            // Mostrar miniatura de preview
             if (activePreviewWrap) {
                 activePreviewWrap.innerHTML = '';
                 var thumb = document.createElement('img');
                 thumb.src = dataUrl;
                 thumb.className = 'crop-preview-thumb';
-                thumb.title = 'Imagen recortada — lista para subir';
                 var label = document.createElement('span');
                 label.textContent = ' Imagen recortada ✔';
                 label.style.cssText = 'font-size:0.85rem;color:#28a745;font-weight:600;';
-                activePreviewWrap.appendChild(thumb);
-                activePreviewWrap.appendChild(label);
-                // Botón para re-recortar
                 var reBtn = document.createElement('button');
                 reBtn.type = 'button';
                 reBtn.textContent = 'Cambiar recorte';
-                reBtn.style.cssText = 'margin-left:10px;background:none;border:1px solid #cc0000;color:#cc0000;border-radius:12px;padding:2px 10px;font-size:0.8rem;cursor:pointer;';
+                reBtn.style.cssText = 'margin-left:10px;background:none;border:1px solid #cc0000;color:#cc0000;border-radius:12px;padding:2px 10px;font-size:0.8rem;cursor:pointer;box-shadow:none;';
                 reBtn.addEventListener('click', function() {
-                    activeCroppedField = activePreviewWrap.closest('form').querySelector('.cropped-data-field');
-                    var fi = activePreviewWrap.closest('form').querySelector('.crop-file-input');
+                    var form = activePreviewWrap.closest('form');
+                    activeCroppedField = form.querySelector('.cropped-data-field');
+                    var fi = form.querySelector('.crop-file-input');
                     if (fi && fi.files && fi.files[0]) {
                         fi.disabled = false;
                         openCropModal(fi, fi.files[0]);
                     }
                 });
-                activePreviewWrap.appendChild(reBtn);
+                activePreviewWrap.append(thumb, label, reBtn);
             }
-
             closeCropModal();
         });
 
         btnCancel.addEventListener('click', function() {
-            // Limpiar el input file al cancelar
-            if (activeFileInput) {
-                activeFileInput.value = '';
-                activeFileInput.disabled = false;
-            }
+            if (activeFileInput) { activeFileInput.value = ''; activeFileInput.disabled = false; }
             if (activeCroppedField) activeCroppedField.value = '';
             if (activePreviewWrap) activePreviewWrap.innerHTML = '';
             closeCropModal();
         });
 
-        // Cerrar al click fuera
         cropModal.addEventListener('click', function(e) {
             if (e.target === cropModal) btnCancel.click();
         });
 
-        // Esc
         document.addEventListener('keydown', function(e) {
             if (e.key === 'Escape' && cropModal.classList.contains('open')) btnCancel.click();
         });
-
-        // Cuando el modal de edición de producto se abre (openModal), los inputs
-        // dinámicos ya tendrán la clase crop-file-input por el template literal,
-        // así que el listener delegado en document.body los captura automáticamente.
     })();
     </script>
 </body>

@@ -1,19 +1,9 @@
 <?php
 /**
- * cart_modal.php — Modal de carrito compartido (carta + tienda)
- * Requiere que estén definidas en el archivo padre:
- *   - $is_open (bool)
- *   - $eligible_items (array)
- *   - $transfer_alias (string, opcional — default 'RRBBPIZZA')
- *   - $transfer_holder (string, opcional — default 'Ezequiel Urquidi')
- *
- * El archivo padre debe definir además, en su propio <script>, la lógica
- * de carrito específica de esa página: addToCart, updateCartUI, toggleCart,
- * closeCart, clearCart, setDelivery, sendOrder, onOverlayClick,
- * openPickupTimeModal/closePickupTimeModal/confirmPickupAndSend (flujo de
- * pedido programado), y los handlers de subproducto/pizza dependiente
- * (openSubproductModal, confirmSubproducts, closeSubproductModal,
- * openDependentProductModal, confirmDependentProduct, closeDependentProductModal).
+ * cart_modal.php — Modal de carrito compartido (Home + Carta standalone)
+ * Variables opcionales del padre:
+ *   - $transfer_alias  (string, default 'RRBBPIZZA')
+ *   - $transfer_holder (string, default 'Ezequiel Urquidi')
  */
 ?>
 
@@ -33,6 +23,9 @@
     <div class="cart-modal-header">
         <h3>Tu Pedido</h3>
         <button type="button" class="cart-modal-close" onclick="closeCart()" aria-label="Cerrar ventana">✕</button>
+    </div>
+    <div id="savedCustomerNotice" style="display:none; font-size:0.78rem; color:#15803d; margin-bottom:8px; font-weight:600;">
+        ✓ Completamos tus datos de tu último pedido (podés editarlos si cambiaron).
     </div>
     <div class="input-group">
         <input type="text" id="customerName" placeholder="Nombre para el pedido" required autocomplete="name">
@@ -61,7 +54,7 @@
             Pago con crédito tiene un recargo del 10%.
         </div>
         <div class="transfer-warning" id="transferWarning">
-            Alias: <b><?php echo htmlspecialchars($transfer_alias ?? 'RRBBPIZZA'); ?></b> <br>Nombre: <?php echo htmlspecialchars($transfer_holder ?? 'Ezequiel Urquidi'); ?>.
+            Alias: <b><?php echo htmlspecialchars($transfer_alias ?? 'RRBBPIZZA', ENT_QUOTES, 'UTF-8'); ?></b> <br>Nombre: <?php echo htmlspecialchars($transfer_holder ?? 'Ezequiel Urquidi', ENT_QUOTES, 'UTF-8'); ?>.
         </div>
         <div class="delivery-payment-notice" id="deliveryPaymentNotice" style="display:none; margin-top:8px; font-size:0.9em; color:#b45309;">
             Para envíos a domicilio el pago debe ser por <strong>Transferencia</strong> o <strong>Efectivo</strong>.
@@ -79,81 +72,40 @@
     </div>
     <div class="cart-actions">
         <button type="button" class="clear-cart" onclick="clearCart()">Limpiar Carrito</button>
-        <button type="button" class="send-order" onclick="sendOrder()">Enviar por WhatsApp</button>
+        <button type="button" class="send-order" onclick="sendOrder()">Elegir horario y enviar</button>
     </div>
 </div>
 
-<!-- Modal: horario del pedido (turno actual, franjas de 15') -->
+<!-- Modal: horario del pedido (Ahora + franjas de 15') -->
 <div class="pickup-time-modal" id="pickupTimeModal" style="display: none;">
-    <h3>¿Para qué horario querés tu pedido?</h3>
-    <p class="pickup-time-sub" id="pickupTimeSub">Elegí a qué hora querés tu pedido:</p>
+    <h3>¿Para cuándo querés tu pedido?</h3>
+    <p class="pickup-time-sub" id="pickupTimeSub">Elegí cuándo querés recibir o retirar tu pedido:</p>
     <div class="pickup-time-slots" id="pickupTimeSlots"></div>
     <div class="pickup-time-actions">
         <button type="button" class="pickup-time-cancel" onclick="closePickupTimeModal(true)">Volver</button>
-        <button type="button" class="pickup-time-confirm" id="pickupConfirmBtn" onclick="confirmPickupAndSend()" disabled>Confirmar pedido</button>
+        <button type="button" class="pickup-time-confirm" id="pickupConfirmBtn" onclick="confirmPickupAndSend()" disabled>Enviar por WhatsApp</button>
     </div>
-</div>
-
-<!-- Modal subproductos (combos/mitades) -->
-<div class="subproduct-modal" id="subproductModal">
-    <h3>Selecciona tus pizzas</h3>
-    <div id="subproductSelections"></div>
-    <button onclick="confirmSubproducts()">Agregar al Carrito</button>
-    <button onclick="closeSubproductModal()">Cancelar</button>
-</div>
-
-<!-- Modal pizza dependiente (burrata, etc.) -->
-<div class="dependent-product-modal" id="dependentProductModal">
-    <h3>Selecciona una pizza para tu <span id="dependentProductTitle"></span></h3>
-    <div id="dependentProductSelection">
-        <select id="dependentPizzaSelect">
-            <option value="">Selecciona una pizza</option>
-            <?php foreach ($eligible_items as $pizza): ?>
-                <option value="<?php echo $pizza['id']; ?>"
-                        data-name="<?php echo htmlspecialchars($pizza['name']); ?>"
-                        data-price="<?php echo $pizza['price']; ?>">
-                    <?php echo htmlspecialchars($pizza['name']); ?> ($<?php echo number_format($pizza['price'], 2); ?>)
-                </option>
-            <?php endforeach; ?>
-        </select>
-    </div>
-    <button onclick="confirmDependentProduct()">Agregar al Carrito</button>
-    <button onclick="closeDependentProductModal()">Cancelar</button>
 </div>
 
 <script>
-/**
- * Restricción: si la modalidad de entrega es "Envío a domicilio",
- * las únicas formas de pago permitidas son "Transferencia" y "Efectivo".
- *
- * Se engancha a los botones de delivery y deja sólo esas opciones válidas
- * en el <select id="paymentMethod">. Cuando se vuelve a "Retiro en local"
- * se restauran todas las opciones originales.
- */
 (function () {
     var ENVIO_ALLOWED = ['Transferencia', 'Efectivo'];
 
-    function applyEnvioPaymentRestriction() {
+    window.applyEnvioPaymentRestriction = function() {
         var select = document.getElementById('paymentMethod');
         var notice = document.getElementById('deliveryPaymentNotice');
         var shippingNotice = document.getElementById('shippingCostNotice');
         if (!select) return;
 
-        // Guardamos las opciones originales una sola vez
         if (!select.dataset.originalOptions) {
             var original = [];
             for (var i = 0; i < select.options.length; i++) {
-                original.push({
-                    value: select.options[i].value,
-                    text: select.options[i].text
-                });
+                original.push({ value: select.options[i].value, text: select.options[i].text });
             }
             select.dataset.originalOptions = JSON.stringify(original);
         }
 
         var currentValue = select.value;
-
-        // Dejamos sólo Transferencia y Efectivo
         select.innerHTML = '';
         var placeholder = document.createElement('option');
         placeholder.value = '';
@@ -167,18 +119,13 @@
             select.appendChild(opt);
         });
 
-        // Si ya había una selección válida (Transferencia/Efectivo), la mantenemos
         select.value = ENVIO_ALLOWED.indexOf(currentValue) !== -1 ? currentValue : '';
-
         if (notice) notice.style.display = 'block';
         if (shippingNotice) shippingNotice.style.display = 'block';
-
-        // Disparamos change para que cualquier listener existente
-        // (por ejemplo el que muestra el aviso de transferencia) reaccione.
         select.dispatchEvent(new Event('change', { bubbles: true }));
-    }
+    };
 
-    function restorePaymentOptions() {
+    window.restorePaymentOptions = function() {
         var select = document.getElementById('paymentMethod');
         var notice = document.getElementById('deliveryPaymentNotice');
         var shippingNotice = document.getElementById('shippingCostNotice');
@@ -194,7 +141,6 @@
                 opt.text = o.text;
                 select.appendChild(opt);
             });
-            // Mantenemos la selección si seguía siendo válida, si no volvemos al placeholder
             select.value = currentValue;
             if (select.value !== currentValue) select.value = '';
             select.dispatchEvent(new Event('change', { bubbles: true }));
@@ -202,17 +148,14 @@
 
         if (notice) notice.style.display = 'none';
         if (shippingNotice) shippingNotice.style.display = 'none';
-    }
+    };
 
     function init() {
         var btnEnvio = document.getElementById('btnEnvio');
         var btnRetiro = document.getElementById('btnRetiro');
         if (!btnEnvio || !btnRetiro) return;
-
-        // Usamos addEventListener para no pisar el onclick que llama a setDelivery().
-        // Este listener corre después del onclick inline.
-        btnEnvio.addEventListener('click', applyEnvioPaymentRestriction);
-        btnRetiro.addEventListener('click', restorePaymentOptions);
+        btnEnvio.addEventListener('click', window.applyEnvioPaymentRestriction);
+        btnRetiro.addEventListener('click', window.restorePaymentOptions);
     }
 
     if (document.readyState === 'loading') {
