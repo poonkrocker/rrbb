@@ -5,6 +5,7 @@
  * Compartido por tienda.php e index.php.
  * Usa localStorage 'store_cart' (no se mezcla con el carrito de pizzas).
  */
+$__store_ship_cost = isset($store_shipping_cost) ? (float)$store_shipping_cost : 0.0;
 ?>
 <!-- Botón flotante carrito de tienda -->
 <div class="cart-container" id="storeCartContainer" style="display:none;">
@@ -17,7 +18,10 @@
 <div class="overlay" id="storeOverlay" onclick="closeStoreCart()"></div>
 
 <div class="cart-modal store-cart-modal" id="storeCartModal">
-    <h3>Tu Compra</h3>
+    <div class="cart-modal-header">
+        <h3>Tu Compra</h3>
+        <button type="button" class="cart-modal-close" onclick="closeStoreCart()" aria-label="Cerrar ventana">✕</button>
+    </div>
 
     <div class="cart-items" id="storeCartItems"></div>
 
@@ -30,7 +34,7 @@
             <input type="text" id="storeName" placeholder="Nombre y apellido" required autocomplete="name">
         </div>
         <div class="input-group">
-            <input type="email" id="storeEmail" placeholder="Email" required autocomplete="email">
+            <input type="email" id="storeEmail" placeholder="Email (para el comprobante)" required autocomplete="email">
         </div>
         <div class="input-group">
             <input type="tel" id="storePhone" placeholder="Teléfono / WhatsApp" required autocomplete="tel">
@@ -41,7 +45,14 @@
                 <button type="button" class="delivery-btn" id="storeBtnEnvio" onclick="setStoreDelivery('envio')">🛵 Envío a domicilio</button>
             </div>
             <div id="storeAddressGroup" style="display:none">
-                <input type="text" id="storeAddress" placeholder="Dirección de entrega" autocomplete="street-address">
+                <input type="text" id="storeAddress" placeholder="Dirección completa de entrega" autocomplete="street-address">
+            </div>
+            <div id="storeShippingNotice" class="store-shipping-note">
+                <?php if ($__store_ship_cost > 0): ?>
+                    🛵 Costo de envío a domicilio: <strong>$<?php echo fmtArs($__store_ship_cost); ?></strong> (sumado al total).
+                <?php else: ?>
+                    🛵 El costo del envío no está incluido en este total y se coordina por WhatsApp luego de la compra.
+                <?php endif; ?>
             </div>
         </div>
     </div>
@@ -53,12 +64,25 @@
 </div>
 
 <script>
-    const STORE_CART_KEY = 'store_cart';
-    let storeDeliveryType = 'retiro';
+    const STORE_CART_KEY      = 'store_cart';
+    const STORE_SHIPPING_COST = <?php echo json_encode(round($__store_ship_cost, 2)); ?>;
+    let storeDeliveryType     = 'retiro';
+
+    function fmtStoreArs(amount) {
+        if (typeof window.fmtArs === 'function') return window.fmtArs(amount);
+        const n = Math.round((Number(amount) || 0) * 100) / 100;
+        const digits = Number.isInteger(n) ? 0 : 2;
+        return n.toLocaleString('es-AR', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+    }
+
+    function storeCartLineKey(item) {
+        return String(item.id) + '::' + String(item.variantId || '');
+    }
 
     function getStoreCart() {
         try {
-            return JSON.parse(localStorage.getItem(STORE_CART_KEY)) || [];
+            const raw = JSON.parse(localStorage.getItem(STORE_CART_KEY)) || [];
+            return Array.isArray(raw) ? raw.filter(i => i && i.name && Number(i.price) >= 0) : [];
         } catch (e) {
             return [];
         }
@@ -71,17 +95,50 @@
         window.scrollToCategory = function (id, event) {
             if (event) event.preventDefault();
             const el = document.getElementById(id);
-            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            if (el) {
+                const navMenu = document.querySelector('.nav-menu');
+                const submenu = document.querySelector('.category-submenu');
+                const offset  = (submenu ? submenu.offsetHeight : 0) + (navMenu ? navMenu.offsetHeight + 16 : 8);
+                const y = el.getBoundingClientRect().top + window.pageYOffset - offset;
+                window.scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
+            }
         };
     }
 
-    function addStoreItem(id, name, price, image) {
+    function selectStoreVariant(pill) {
+        const picker = pill.closest('.store-variant-picker');
+        if (!picker) return;
+        picker.querySelectorAll('.store-variant-pill').forEach(p => p.classList.remove('active'));
+        pill.classList.add('active');
+
+        const price  = parseFloat(pill.dataset.variantPrice) || 0;
+        const desc   = pill.dataset.variantDesc || '';
+        const descEl = picker.querySelector('.variant-desc');
+        if (descEl) descEl.textContent = desc;
+
+        const card = pill.closest('.store-card');
+        const priceEl = card ? (card.querySelector('.variant-current-price') || card.querySelector('.item-price')) : null;
+        if (priceEl) {
+            priceEl.dataset.price = price;
+            priceEl.textContent = fmtStoreArs(price);
+        }
+    }
+
+    function addStoreItem(id, name, price, image, variantId = '') {
         const cart = getStoreCart();
-        const existing = cart.find(i => String(i.id) === String(id));
+        const key  = String(id) + '::' + String(variantId || '');
+        const existing = cart.find(i => storeCartLineKey(i) === key);
         if (existing) {
-            existing.quantity += 1;
+            existing.quantity = (Number(existing.quantity) || 1) + 1;
         } else {
-            cart.push({ id: String(id), name, price: Number(price) || 0, image, quantity: 1 });
+            cart.push({
+                id: String(id),
+                variantId: variantId || '',
+                name: name,
+                price: Number(price) || 0,
+                image: image || '',
+                quantity: 1
+            });
         }
         setStoreCart(cart);
         updateStoreCartUI();
@@ -89,7 +146,7 @@
 
         if (typeof window.rrbbTrack === 'function') {
             window.rrbbTrack('add_to_cart', {
-                id: String(id),
+                id: variantId ? `${id}_${variantId}` : String(id),
                 name: name,
                 price: Number(price) || 0,
                 quantity: 1
@@ -98,35 +155,51 @@
     }
 
     document.addEventListener('click', function (e) {
-        const btn = e.target.closest('.store-add-btn');
-        if (!btn) return;
-        const card = btn.closest('.pizza-item');
-        if (!card) return;
-        addStoreItem(
-            card.dataset.itemId,
-            card.dataset.itemName,
-            parseFloat(card.dataset.itemPrice),
-            card.dataset.itemImage || ''
-        );
+        const pill = e.target.closest('.store-variant-pill');
+        if (pill) return;
+
+        const card = e.target.closest('.store-card');
+        if (!card || card.classList.contains('store-soldout')) return;
+
+        const activeVar = card.querySelector('.store-variant-pill.active') || card.querySelector('.store-variant-pill');
+        let itemName  = card.dataset.itemName || '';
+        let itemPrice = parseFloat(card.dataset.itemPrice) || 0;
+        let variantId = '';
+
+        if (activeVar) {
+            itemPrice = parseFloat(activeVar.dataset.variantPrice) || 0;
+            const vName = activeVar.dataset.variantName || '';
+            variantId = activeVar.dataset.variantId ? ('v' + activeVar.dataset.variantId) : '';
+            if (vName) itemName = `${itemName} — ${vName}`;
+        }
+
+        addStoreItem(card.dataset.itemId, itemName, itemPrice, card.dataset.itemImage || '', variantId);
+
+        const toast = card.querySelector('.added-toast');
+        if (toast) {
+            toast.classList.add('show');
+            setTimeout(() => toast.classList.remove('show'), 1200);
+        }
     });
 
-    function changeStoreQty(id, delta) {
+    function changeStoreQty(lineKey, delta) {
         let cart = getStoreCart();
-        const item = cart.find(i => String(i.id) === String(id));
+        const item = cart.find(i => storeCartLineKey(i) === lineKey);
         if (!item) return;
-        item.quantity += delta;
+        item.quantity = (Number(item.quantity) || 1) + delta;
         if (item.quantity <= 0) {
-            cart = cart.filter(i => String(i.id) !== String(id));
+            cart = cart.filter(i => storeCartLineKey(i) !== lineKey);
         }
         setStoreCart(cart);
         updateStoreCartUI();
+        if (cart.length === 0) closeStoreCart();
     }
 
     function updateStoreCartUI() {
-        const cart = getStoreCart();
-        const count = document.getElementById('storeCartCount');
-        const totalEl = document.getElementById('storeCartTotal');
-        const itemsEl = document.getElementById('storeCartItems');
+        const cart      = getStoreCart();
+        const count     = document.getElementById('storeCartCount');
+        const totalEl   = document.getElementById('storeCartTotal');
+        const itemsEl   = document.getElementById('storeCartItems');
         const container = document.getElementById('storeCartContainer');
         if (!count || !totalEl || !itemsEl || !container) return;
 
@@ -138,9 +211,11 @@
         }
 
         cart.forEach(item => {
-            const lineTotal = (Number(item.price) || 0) * (Number(item.quantity) || 1);
+            const qty       = Math.max(1, Number(item.quantity) || 1);
+            const lineTotal = (Number(item.price) || 0) * qty;
+            const lineKey   = storeCartLineKey(item);
             total += lineTotal;
-            itemCount += Number(item.quantity) || 1;
+            itemCount += qty;
 
             const row = document.createElement('div');
             row.className = 'store-cart-item';
@@ -154,24 +229,33 @@
             const btnMinus = document.createElement('button');
             btnMinus.type = 'button';
             btnMinus.textContent = '−';
-            btnMinus.onclick = () => changeStoreQty(item.id, -1);
+            btnMinus.onclick = () => changeStoreQty(lineKey, -1);
             const qtySpan = document.createElement('span');
-            qtySpan.textContent = String(item.quantity);
+            qtySpan.textContent = String(qty);
             const btnPlus = document.createElement('button');
             btnPlus.type = 'button';
             btnPlus.textContent = '+';
-            btnPlus.onclick = () => changeStoreQty(item.id, 1);
+            btnPlus.onclick = () => changeStoreQty(lineKey, 1);
             qtyWrap.append(btnMinus, qtySpan, btnPlus);
 
             const priceSpan = document.createElement('span');
-            priceSpan.textContent = '$' + lineTotal.toFixed(2);
+            priceSpan.style.fontWeight = '700';
+            priceSpan.textContent = '$' + fmtStoreArs(lineTotal);
 
             row.append(sciName, qtyWrap, priceSpan);
             itemsEl.appendChild(row);
         });
 
+        if (cart.length > 0 && storeDeliveryType === 'envio' && STORE_SHIPPING_COST > 0) {
+            const shipRow = document.createElement('div');
+            shipRow.className = 'store-cart-item store-shipping-row';
+            shipRow.innerHTML = '<span class="sci-name">🛵 Envío a domicilio</span><span>$' + fmtStoreArs(STORE_SHIPPING_COST) + '</span>';
+            itemsEl.appendChild(shipRow);
+            total += STORE_SHIPPING_COST;
+        }
+
         count.textContent = itemCount;
-        totalEl.textContent = total.toFixed(2);
+        totalEl.textContent = fmtStoreArs(total);
         container.style.display = itemCount > 0 ? 'block' : 'none';
     }
 
@@ -183,11 +267,11 @@
     }
 
     function toggleStoreCart() {
-        const modal = document.getElementById('storeCartModal');
+        const modal   = document.getElementById('storeCartModal');
         const overlay = document.getElementById('storeOverlay');
         if (!modal || !overlay) return;
-        const isVisible = modal.style.display === 'block';
-        modal.style.display = isVisible ? 'none' : 'block';
+        const isVisible = modal.classList.contains('active') || modal.style.display === 'block';
+        modal.style.display   = isVisible ? 'none' : 'block';
         overlay.style.display = isVisible ? 'none' : 'block';
         modal.classList.toggle('active', !isVisible);
         overlay.classList.toggle('active', !isVisible);
@@ -208,41 +292,60 @@
     }
 
     function closeStoreCart() {
-        document.getElementById('storeCartModal').style.display = 'none';
-        document.getElementById('storeOverlay').style.display = 'none';
-        document.getElementById('storeCartModal').classList.remove('active');
-        document.getElementById('storeOverlay').classList.remove('active');
+        const modal   = document.getElementById('storeCartModal');
+        const overlay = document.getElementById('storeOverlay');
+        if (modal)   { modal.style.display = 'none'; modal.classList.remove('active'); }
+        if (overlay) { overlay.style.display = 'none'; overlay.classList.remove('active'); }
     }
 
     function clearStoreCart() {
         localStorage.removeItem(STORE_CART_KEY);
         updateStoreCartUI();
+        closeStoreCart();
     }
 
     function setStoreDelivery(type) {
-        storeDeliveryType = type;
-        document.getElementById('storeBtnRetiro').classList.toggle('active', type === 'retiro');
-        document.getElementById('storeBtnEnvio').classList.toggle('active', type === 'envio');
-        document.getElementById('storeAddressGroup').style.display = type === 'envio' ? 'block' : 'none';
-        if (type === 'retiro') document.getElementById('storeAddress').value = '';
+        storeDeliveryType = (type === 'envio') ? 'envio' : 'retiro';
+        const btnR = document.getElementById('storeBtnRetiro');
+        const btnE = document.getElementById('storeBtnEnvio');
+        const addr = document.getElementById('storeAddressGroup');
+        const note = document.getElementById('storeShippingNotice');
+        if (btnR) btnR.classList.toggle('active', storeDeliveryType === 'retiro');
+        if (btnE) btnE.classList.toggle('active', storeDeliveryType === 'envio');
+        if (addr) addr.style.display = storeDeliveryType === 'envio' ? 'block' : 'none';
+        if (note) note.style.display = storeDeliveryType === 'envio' ? 'block' : 'none';
+        updateStoreCartUI();
     }
 
     async function checkoutStore() {
         const cart = getStoreCart();
         if (cart.length === 0) { alert('Tu carrito está vacío.'); return; }
 
-        const name = document.getElementById('storeName').value.trim();
-        const email = document.getElementById('storeEmail').value.trim();
-        const phone = document.getElementById('storePhone').value.trim();
+        const name    = document.getElementById('storeName').value.trim();
+        const email   = document.getElementById('storeEmail').value.trim();
+        const phone   = document.getElementById('storePhone').value.trim();
         const address = document.getElementById('storeAddress')?.value.trim() || '';
 
-        if (!name)  { alert('Ingresá tu nombre.'); return; }
+        if (!name)  { alert('Ingresá tu nombre y apellido.'); return; }
         if (!email) { alert('Ingresá tu email.'); return; }
-        if (!phone) { alert('Ingresá tu teléfono.'); return; }
-        if (storeDeliveryType === 'envio' && !address) { alert('Ingresá la dirección de entrega.'); return; }
+        if (!phone) { alert('Ingresá tu teléfono o WhatsApp.'); return; }
+        if (storeDeliveryType === 'envio' && !address) { alert('Ingresá la dirección completa de entrega.'); return; }
+
+        try {
+            localStorage.setItem('rrbb_customer_name', name);
+            localStorage.setItem('rrbb_customer_email', email);
+            localStorage.setItem('rrbb_customer_phone', phone);
+            if (address) localStorage.setItem('rrbb_customer_address', address);
+        } catch (e) {}
 
         const payload = {
-            items: cart.map(i => ({ id: i.id, name: i.name, price: i.price, quantity: i.quantity })),
+            items: cart.map(i => ({
+                id: i.id,
+                variantId: i.variantId || '',
+                name: i.name,
+                price: i.price,
+                quantity: i.quantity
+            })),
             customer: { name, email, phone },
             delivery: { type: storeDeliveryType, address }
         };
@@ -289,12 +392,14 @@
 
     document.addEventListener('DOMContentLoaded', function() {
         try {
-            const sName = localStorage.getItem('rrbb_customer_name') || '';
-            const sPhone = localStorage.getItem('rrbb_customer_phone') || '';
-            const sAddr = localStorage.getItem('rrbb_customer_address') || '';
-            if (sName && document.getElementById('storeName')) document.getElementById('storeName').value = sName;
-            if (sPhone && document.getElementById('storePhone')) document.getElementById('storePhone').value = sPhone;
-            if (sAddr && document.getElementById('storeAddress')) document.getElementById('storeAddress').value = sAddr;
+            const sName  = localStorage.getItem('rrbb_customer_name')    || '';
+            const sEmail = localStorage.getItem('rrbb_customer_email')   || '';
+            const sPhone = localStorage.getItem('rrbb_customer_phone')   || '';
+            const sAddr  = localStorage.getItem('rrbb_customer_address') || '';
+            if (sName  && document.getElementById('storeName'))    document.getElementById('storeName').value    = sName;
+            if (sEmail && document.getElementById('storeEmail'))   document.getElementById('storeEmail').value   = sEmail;
+            if (sPhone && document.getElementById('storePhone'))   document.getElementById('storePhone').value   = sPhone;
+            if (sAddr  && document.getElementById('storeAddress')) document.getElementById('storeAddress').value = sAddr;
         } catch (e) {}
         updateStoreCartUI();
     });

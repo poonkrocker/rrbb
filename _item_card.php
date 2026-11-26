@@ -6,6 +6,15 @@
  * evitando por completo roturas con comillas simples/dobles o caracteres especiales.
  */
 
+if (!function_exists('fmtArs')) {
+    function fmtArs($amount): string {
+        $n = round((float)$amount, 2);
+        return (floor($n) == $n)
+            ? number_format($n, 0, ',', '.')
+            : number_format($n, 2, ',', '.');
+    }
+}
+
 $item_variants      = (isset($variants_by_item) && !empty($variants_by_item[$item['id']]))
     ? $variants_by_item[$item['id']]
     : [];
@@ -51,7 +60,8 @@ if ($imgUrl !== '' && !preg_match('/^https?:\/\//i', $imgUrl)) {
         <?php endif; ?>
         <img src="<?php echo htmlspecialchars($imgUrl, ENT_QUOTES, 'UTF-8'); ?>"
              alt="<?php echo htmlspecialchars((string)$item['name'], ENT_QUOTES, 'UTF-8'); ?>"
-             loading="lazy">
+             loading="lazy"
+             decoding="async">
     </div>
 
     <?php if ($has_variants && $variants_use_modal): ?>
@@ -64,7 +74,7 @@ if ($imgUrl !== '' && !preg_match('/^https?:\/\//i', $imgUrl)) {
         <p class="item-desc"><?php echo nl2br(htmlspecialchars((string)($item['description'] ?? ''), ENT_QUOTES, 'UTF-8')); ?></p>
         <div class="added-toast">✓ Agregada</div>
         <div class="price-container variant-price-container">
-            <p class="variant-from">Desde $<span class="item-price" data-price="<?php echo (float)$variant_min; ?>"><?php echo number_format((float)$variant_min, 2); ?></span></p>
+            <p class="variant-from">Desde $<span class="item-price" data-price="<?php echo (float)$variant_min; ?>"><?php echo fmtArs($variant_min); ?></span></p>
             <span class="variant-hint"><?php echo (int)$variant_count; ?> variantes · tocá para elegir</span>
         </div>
 
@@ -107,7 +117,7 @@ if ($imgUrl !== '' && !preg_match('/^https?:\/\//i', $imgUrl)) {
                                     data-extra-price="<?php echo (float)$extra['price']; ?>"
                                     onclick="toggleItemExtra(this, event)">
                                 <span class="extra-plus">+</span> <?php echo htmlspecialchars((string)$extra['name'], ENT_QUOTES, 'UTF-8'); ?>
-                                <span class="extra-price-tag">(+$<?php echo number_format((float)$extra['price'], 0, ',', '.'); ?>)</span>
+                                <span class="extra-price-tag">(+$<?php echo fmtArs($extra['price']); ?>)</span>
                             </button>
                         <?php endforeach; ?>
                     </div>
@@ -115,7 +125,7 @@ if ($imgUrl !== '' && !preg_match('/^https?:\/\//i', $imgUrl)) {
             <?php endif; ?>
             <div class="added-toast">✓ Agregada</div>
             <div class="price-container">
-                <p>$<span class="item-price variant-current-price" data-price="<?php echo (float)$__default['price']; ?>"><?php echo number_format((float)$__default['price'], 2); ?></span></p>
+                <p>$<span class="item-price variant-current-price" data-price="<?php echo (float)$__default['price']; ?>"><?php echo fmtArs($__default['price']); ?></span></p>
             </div>
         </div>
 
@@ -139,21 +149,21 @@ if ($imgUrl !== '' && !preg_match('/^https?:\/\//i', $imgUrl)) {
                                 data-extra-price="<?php echo (float)$extra['price']; ?>"
                                 onclick="toggleItemExtra(this, event)">
                             <span class="extra-plus">+</span> <?php echo htmlspecialchars((string)$extra['name'], ENT_QUOTES, 'UTF-8'); ?>
-                            <span class="extra-price-tag">(+$<?php echo number_format((float)$extra['price'], 0, ',', '.'); ?>)</span>
+                            <span class="extra-price-tag">(+$<?php echo fmtArs($extra['price']); ?>)</span>
                         </button>
                     <?php endforeach; ?>
                 </div>
             </div>
             <div class="added-toast">✓ Agregada</div>
             <div class="price-container">
-                <p>$<span class="item-price" data-price="<?php echo (float)$item['price']; ?>"><?php echo number_format((float)$item['price'], 2); ?></span></p>
+                <p>$<span class="item-price" data-price="<?php echo (float)$item['price']; ?>"><?php echo fmtArs($item['price']); ?></span></p>
             </div>
         <?php else: ?>
             <h3><?php echo htmlspecialchars((string)$item['name'], ENT_QUOTES, 'UTF-8'); ?></h3>
             <p class="item-desc"><?php echo nl2br(htmlspecialchars((string)($item['description'] ?? ''), ENT_QUOTES, 'UTF-8')); ?></p>
             <div class="added-toast">✓ Agregada</div>
             <div class="price-container">
-                <p>$<span class="item-price" data-price="<?php echo (float)$item['price']; ?>"><?php echo number_format((float)$item['price'], 2); ?></span></p>
+                <p>$<span class="item-price" data-price="<?php echo (float)$item['price']; ?>"><?php echo fmtArs($item['price']); ?></span></p>
                 <?php if (!empty($item['has_vegan_option'])): ?>
                     <button type="button" class="vegan-button" onclick="event.stopPropagation(); addCardItemToCart(this.closest('.pizza-item'), true)">🌿 Versión Vegana</button>
                 <?php endif; ?>

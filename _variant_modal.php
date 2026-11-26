@@ -41,7 +41,8 @@ $variants_by_item = $variants_by_item ?? [];
         const opts = document.getElementById('variantModalOptions');
         opts.innerHTML = '';
         variants.forEach(function(v) {
-            const price = Number(v.price) || 0;
+            const price = Math.round((Number(v.price) || 0) * 100) / 100;
+            const digits = Number.isInteger(price) ? 0 : 2;
             const row = document.createElement('button');
             row.type = 'button';
             row.className = 'variant-option';
@@ -51,7 +52,7 @@ $variants_by_item = $variants_by_item ?? [];
                     (v.description ? '<span class="variant-option-desc"></span>' : '') +
                 '</span>' +
                 '<span class="variant-option-price">$' +
-                    price.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) +
+                    price.toLocaleString('es-AR', { minimumFractionDigits: digits, maximumFractionDigits: digits }) +
                 '</span>';
             row.querySelector('.variant-option-name').textContent = v.name;
             if (v.description) row.querySelector('.variant-option-desc').textContent = v.description;

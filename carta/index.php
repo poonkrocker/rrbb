@@ -40,6 +40,7 @@ $track_endpoint   = 'track.php';
     <title>Nuestra Carta - Pizzería Arrabbiata</title>
     <link rel="icon" type="image/png" href="favicon.png"/>
 <?php require dirname(__DIR__) . '/_analytics.php'; ?>
+    <link rel="preload" href="rrbb.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="stylesheet" href="arrabbiata.css">
     <script type="application/ld+json">
 <?php echo json_encode($local_schema, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT); ?>
@@ -51,6 +52,7 @@ $track_endpoint   = 'track.php';
                  url('rrbb.woff') format('woff');
             font-weight: normal;
             font-style: normal;
+            font-display: swap;
         }
         .section { padding-top: 30px !important; }
         .menu-header {
@@ -110,20 +112,5 @@ $track_endpoint   = 'track.php';
     </footer>
 
 <?php include dirname(__DIR__) . '/_carta_scripts.php'; ?>
-<script>
-document.addEventListener('DOMContentLoaded', function() {
-    // Ajustar el top sticky del submenú si está visible la franja de cerrado/preventa
-    const submenu = document.querySelector('.category-submenu');
-    const notice  = document.querySelector('.closed-notice.active');
-    if (submenu) {
-        function applyTop() {
-            const extra = notice ? (notice.offsetHeight || 0) : 0;
-            submenu.style.top = extra + 'px';
-        }
-        applyTop();
-        window.addEventListener('resize', applyTop);
-    }
-});
-</script>
 </body>
 </html>

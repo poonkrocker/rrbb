@@ -43,4 +43,15 @@ RewriteRule .* - [F,L]
   Header always set Referrer-Policy "strict-origin-when-cross-origin"
 </IfModule>
 
+# --- Caché estática para fuentes e imágenes ---
+<IfModule mod_expires.c>
+  ExpiresActive On
+  ExpiresByType font/woff2 "access plus 1 year"
+  ExpiresByType font/woff "access plus 1 year"
+  ExpiresByType image/webp "access plus 30 days"
+  ExpiresByType image/png "access plus 30 days"
+  ExpiresByType image/gif "access plus 30 days"
+  ExpiresByType text/css "access plus 7 days"
+</IfModule>
+
 AddDefaultCharset UTF-8

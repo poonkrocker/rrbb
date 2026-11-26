@@ -31,6 +31,23 @@
             .replace(/'/g, '&#39;');
     }
 
+    function fmtArs(amount) {
+        const n = Math.round((Number(amount) || 0) * 100) / 100;
+        const digits = Number.isInteger(n) ? 0 : 2;
+        return n.toLocaleString('es-AR', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+    }
+    window.fmtArs = fmtArs;
+
+    function syncStickySubmenuOffset() {
+        const navMenu = document.querySelector('.nav-menu');
+        let topPx = 0;
+        if (navMenu) {
+            const rect = navMenu.getBoundingClientRect();
+            topPx = Math.max(0, Math.ceil(rect.bottom + 6));
+        }
+        document.documentElement.style.setProperty('--sticky-submenu-top', topPx + 'px');
+    }
+
     function normalizePay(str) {
         return String(str || '')
             .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
@@ -67,6 +84,8 @@
     }
 
     document.addEventListener('DOMContentLoaded', function() {
+        syncStickySubmenuOffset();
+        window.addEventListener('resize', syncStickySubmenuOffset);
         restoreSavedCustomerData();
         updateCartUI();
 
@@ -138,7 +157,7 @@
         const priceEl = picker.querySelector('.variant-current-price') || (card ? card.querySelector('.item-price') : null);
         if (priceEl) {
             priceEl.dataset.price = finalPrice;
-            priceEl.textContent = finalPrice.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            priceEl.textContent = fmtArs(finalPrice);
         }
     }
 
@@ -169,7 +188,7 @@
         const finalPrice = basePrice + extrasTotal;
         const priceSpan = card.querySelector('.variant-current-price') || card.querySelector('.item-price');
         if (priceSpan) {
-            priceSpan.textContent = finalPrice.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            priceSpan.textContent = fmtArs(finalPrice);
         }
     }
 
@@ -224,7 +243,7 @@
             });
             const priceSpan = card.querySelector('.variant-current-price') || card.querySelector('.item-price');
             if (priceSpan) {
-                priceSpan.textContent = basePrice.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                priceSpan.textContent = fmtArs(basePrice);
             }
         }
     }
@@ -320,7 +339,7 @@
                     <button type="button" class="cart-item-remove" onclick="removeCartItem(${index})" title="Eliminar este ítem" aria-label="Eliminar ${safeLabel}">✕</button>
                     <span class="cart-item-name">${safeLabel} x${qty}</span>
                 </div>
-                <span class="cart-item-price">$${itemTotal.toFixed(2)}</span>
+                <span class="cart-item-price">$${fmtArs(itemTotal)}</span>
             `;
             cartItems.appendChild(cartItem);
         });
@@ -336,13 +355,13 @@
             const surcharge = Number((total * 0.10).toFixed(2));
             const surchargeRow = document.createElement('div');
             surchargeRow.className = 'cart-item cart-surcharge';
-            surchargeRow.innerHTML = `<span class="cart-item-name">Recargo Tarjeta Crédito (10%)</span><span class="cart-item-price">$${surcharge.toFixed(2)}</span>`;
+            surchargeRow.innerHTML = `<span class="cart-item-name">Recargo Tarjeta Crédito (10%)</span><span class="cart-item-price">$${fmtArs(surcharge)}</span>`;
             cartItems.appendChild(surchargeRow);
             total += surcharge;
         }
 
         cartCount.textContent = itemCount;
-        cartTotal.textContent = total.toFixed(2);
+        cartTotal.textContent = fmtArs(total);
         cartContainer.style.display = itemCount > 0 ? 'block' : 'none';
     }
 
@@ -627,7 +646,7 @@
             const qty       = Math.max(1, Number(item.quantity) || 1);
             const unitPrice = Number(item.price) || 0;
             const itemTotal = unitPrice * qty;
-            message += `- ${item.name} x${qty}: $${itemTotal.toFixed(2)}\n`;
+            message += `- ${item.name} x${qty}: $${fmtArs(itemTotal)}\n`;
             total += itemTotal;
             totalUnits += qty;
 
@@ -639,7 +658,7 @@
         if (pm === 'credito') {
             const surcharge = Number((total * 0.10).toFixed(2));
             total += surcharge;
-            message += `- Recargo TC x1: $${surcharge.toFixed(2)}\n`;
+            message += `- Recargo TC x1: $${fmtArs(surcharge)}\n`;
             pizzalogItems.push({ name: 'Recargo Tarjeta Crédito (10%)', qty: 1, price: surcharge });
         } else if (pm === 'transferencia') {
             message += `\nDatos para la transferencia: Alias: ${TRANSFER_ALIAS}, Nombre: ${TRANSFER_HOLDER}`;
@@ -652,7 +671,7 @@
         const horarioLabel = deliveryType === 'envio' ? 'Horario de entrega' : 'Horario de retiro';
         const horarioDisplay = (pickupTime === 'Ahora') ? 'Ahora (lo antes posible)' : pickupTime;
         const preorderTag = isPreorder ? '\n📅 *Pedido programado (local cerrado al momento de pedir)*' : '';
-        message += `\n\n${entrega}\n🕒 *${horarioLabel}:* ${horarioDisplay}${preorderTag}\nTotal: $${total.toFixed(2)}\nForma de pago: ${paymentMethod}`;
+        message += `\n\n${entrega}\n🕒 *${horarioLabel}:* ${horarioDisplay}${preorderTag}\nTotal: $${fmtArs(total)}\nForma de pago: ${paymentMethod}`;
 
         const finalTotal = Number(total.toFixed(2));
 

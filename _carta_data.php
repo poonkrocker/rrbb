@@ -10,6 +10,14 @@
 require_once __DIR__ . '/_visibility.php';
 require_once __DIR__ . '/_variants_data.php';
 
+if (!function_exists('fmtArs')) {
+function fmtArs($amount): string {
+    $n = round((float)$amount, 2);
+    return (floor($n) == $n)
+        ? number_format($n, 0, ',', '.')
+        : number_format($n, 2, ',', '.');
+}}
+
 date_default_timezone_set('America/Argentina/Cordoba');
 $current_time = date('H:i:s');
 $current_day  = date('l');

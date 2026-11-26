@@ -49,7 +49,11 @@ $__ga4_id   = trim((string)($__rrbb_analytics_cfg['ga4_id'] ?? ''));
 $__a_source = $analytics_source ?? 'carta';
 $__t_url    = $track_endpoint ?? 'carta/track.php';
 $__skip_vw  = !empty($analytics_skip_auto_view);
+$__is_staging_dir = (strpos((string)($_SERVER['REQUEST_URI'] ?? ''), '/github') === 0);
 ?>
+<?php if ($__is_staging_dir): ?>
+    <meta name="robots" content="noindex, nofollow">
+<?php endif; ?>
     <script>window.dataLayer = window.dataLayer || [];</script>
 <?php if ($__gtm_id !== '' && preg_match('/^GTM-[A-Z0-9]+$/i', $__gtm_id)): ?>
     <!-- Google Tag Manager -->

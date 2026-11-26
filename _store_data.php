@@ -1,30 +1,48 @@
 <?php
 /**
- * _store_data.php — Carga los datos de la TIENDA (categorías + productos).
+ * _store_data.php — Carga los datos de la TIENDA (categorías, productos, variantes y envío).
  *
- * Partial compartido por tienda.php e index.php, para que ambos muestren
- * exactamente los mismos productos sin duplicar la consulta.
+ * Partial compartido por tienda.php e index.php.
  *
  * Requiere en el scope:
  *   - $pdo (PDO)
  *   - $current_day_es, $current_time (definidos para el filtro de visibilidad)
- *   - función isItemVisibleNow() (incluí _visibility.php antes)
- *
- * Define:
- *   - $store_categories      (array) categorías cuyo nombre contiene "Tienda"
- *   - $store_items_by_cat    (array) productos visibles por id de categoría
- *   - $store_total_items     (int)   total de productos de tienda visibles
+ *   - función isItemVisibleNow() (_visibility.php)
  */
 
-$store_categories   = [];
-$store_items_by_cat = [];
-$store_total_items  = 0;
+require_once __DIR__ . '/_visibility.php';
+require_once __DIR__ . '/_variants_data.php';
+
+if (!function_exists('fmtArs')) {
+    function fmtArs($amount): string {
+        $n = round((float)$amount, 2);
+        return (floor($n) == $n)
+            ? number_format($n, 0, ',', '.')
+            : number_format($n, 2, ',', '.');
+    }
+}
+
+$store_categories    = [];
+$store_items_by_cat  = [];
+$store_total_items   = 0;
+$store_shipping_cost = 0.0;
+
+try {
+    $__ship_st = $pdo->prepare("SELECT setting_value FROM site_settings WHERE setting_key = 'store_shipping_cost' LIMIT 1");
+    $__ship_st->execute();
+    $__ship_val = $__ship_st->fetchColumn();
+    if ($__ship_val !== false && is_numeric($__ship_val)) {
+        $store_shipping_cost = max(0.0, round((float)$__ship_val, 2));
+    }
+} catch (Throwable $e) {
+    $store_shipping_cost = 0.0;
+}
 
 try {
     $__cats_stmt = $pdo->query("SELECT * FROM categories ORDER BY display_order");
     $__all_categories = $__cats_stmt->fetchAll(PDO::FETCH_ASSOC);
     foreach ($__all_categories as $__c) {
-        if (stripos($__c['name'], 'Tienda') !== false) {
+        if (stripos((string)$__c['name'], 'Tienda') !== false) {
             $store_categories[] = $__c;
         }
     }

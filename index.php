@@ -159,9 +159,9 @@ $track_endpoint   = 'carta/track.php';
     <meta name="twitter:description" content="La mejor pizza de Alberdi, estilo napolitano. En Córdoba Capital.">
     <meta name="twitter:image" content="https://arrabbiata.com.ar/wp-content/uploads/2025/05/Identidad-Arrabbiata-19_page-0001-1-scaled-e1746087327655.png">
 
+    <link rel="preload" href="rrbb.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="stylesheet" href="arrabbiata.css">
     <link rel="icon" type="image/png" href="/favicon.png"/>
-    <link href="https://fonts.googleapis.com/css2?family=Comic+Neue:wght@400;700&display=swap" rel="stylesheet">
 
     <!-- Schema JSON-LD: Restaurant (dinámico desde BD) -->
     <script type="application/ld+json">
@@ -200,8 +200,10 @@ $track_endpoint   = 'carta/track.php';
             <div class="home-content">
                 <img src="https://arrabbiata.com.ar/Uploads/logolindo.png"
                      alt="Arrabbiata"
-                     class="floating-logo">
+                     class="floating-logo"
+                     fetchpriority="high">
                 <p>LA MEJOR PIZZA DE ALBERDI</p>
+                <a href="#carta" class="hero-cta">🍕 Ver la Carta y Pedir</a>
             </div>
         </section>
 
@@ -316,8 +318,8 @@ document.addEventListener('DOMContentLoaded', function() {
         }, 5000);
     }
 
-    // Smooth scroll de la barra superior
-    document.querySelectorAll('.nav-menu a[href^="#"]').forEach(anchor => {
+    // Smooth scroll de la barra superior y botón principal
+    document.querySelectorAll('.nav-menu a[href^="#"], .hero-cta[href^="#"]').forEach(anchor => {
         anchor.addEventListener('click', function(e) {
             const target = document.querySelector(this.getAttribute('href'));
             if (target) {

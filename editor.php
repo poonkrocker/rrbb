@@ -42,11 +42,12 @@ function ensureSiteSettings(PDO $pdo): void {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ");
     $seed = $pdo->prepare("INSERT IGNORE INTO site_settings (setting_key, setting_value) VALUES (?, ?)");
-    $seed->execute(['transfer_alias',  'RRBBPIZZA']);
-    $seed->execute(['transfer_holder', 'Ezequiel Urquidi']);
-    $seed->execute(['gtm_id',          'GTM-5JWLLKC7']);
-    $seed->execute(['meta_pixel_id',   '313442609878673']);
-    $seed->execute(['ga4_id',          '']);
+    $seed->execute(['transfer_alias',      'RRBBPIZZA']);
+    $seed->execute(['transfer_holder',     'Ezequiel Urquidi']);
+    $seed->execute(['gtm_id',              'GTM-5JWLLKC7']);
+    $seed->execute(['meta_pixel_id',       '313442609878673']);
+    $seed->execute(['ga4_id',              '']);
+    $seed->execute(['store_shipping_cost', '0']);
 }
 function getSetting(PDO $pdo, string $key, string $default = ''): string {
     try {
@@ -67,6 +68,220 @@ try {
 try {
     $pdo->exec("DELETE FROM menu_item_subproducts WHERE parent_item_id NOT IN (SELECT id FROM menu_items) OR sub_item_id NOT IN (SELECT id FROM menu_items)");
 } catch (Throwable $e) { /* tabla opcional */ }
+
+// ── Motor de Publicación 1-Click desde /github hacia public_html (sin FTP) ───
+function resolveDeployPaths(): array {
+    $here = rtrim(str_replace('\\', '/', __DIR__), '/');
+    if (strtolower(basename($here)) === 'github') {
+        return [
+            'is_running_in_github' => true,
+            'src'                  => $here,
+            'dst'                  => dirname($here),
+        ];
+    }
+    return [
+        'is_running_in_github' => false,
+        'src'                  => $here . '/github',
+        'dst'                  => $here,
+    ];
+}
+
+function getGitRepoMeta(string $srcDir): ?array {
+    $gitDir = $srcDir . '/.git';
+    if (!is_dir($gitDir)) return null;
+
+    $hash = '';
+    $msg  = '';
+    $date = '';
+
+    $logFile = $gitDir . '/logs/HEAD';
+    if (is_readable($logFile)) {
+        $lines = @file($logFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        if (!empty($lines)) {
+            $last = end($lines);
+            if (preg_match('/^[0-9a-f]{40}\s+([0-9a-f]{40})\s+.*?\s+(\d{9,12})\s+[+\-]\d{4}\t(.*)$/i', (string)$last, $m)) {
+                $hash = substr($m[1], 0, 7);
+                $ts   = (int)$m[2];
+                $dt   = (new DateTime('@' . $ts))->setTimezone(new DateTimeZone('America/Argentina/Cordoba'));
+                $date = $dt->format('d/m/Y H:i');
+                $msg  = trim($m[3]);
+            }
+        }
+    }
+
+    if ($hash === '' && is_readable($gitDir . '/HEAD')) {
+        $head = trim((string)@file_get_contents($gitDir . '/HEAD'));
+        if (strpos($head, 'ref: ') === 0) {
+            $refPath = $gitDir . '/' . trim(substr($head, 5));
+            if (is_readable($refPath)) {
+                $hash = substr(trim((string)@file_get_contents($refPath)), 0, 7);
+            }
+        } else {
+            $hash = substr($head, 0, 7);
+        }
+    }
+
+    return [
+        'hash' => $hash ?: 'main',
+        'date' => $date,
+        'msg'  => $msg,
+    ];
+}
+
+function isDeployableRepoFile(string $filename): bool {
+    if ($filename === '' || $filename === '.' || $filename === '..') return false;
+    if ($filename === '.htaccess') return true;
+    if ($filename[0] === '.') return false;
+
+    $lower = strtolower($filename);
+    $never = ['readme.md', 'config.php', 'error_log', 'error_log.txt'];
+    if (in_array($lower, $never, true)) return false;
+    if (preg_match('/(\.tmp_deploy$|\-old\.|\.(log|sql|bak|env|md|zip|tar|gz|bkp|lk)$)/i', $filename)) return false;
+
+    $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+    return in_array($ext, ['php', 'css', 'js', 'html', 'woff', 'woff2', 'png', 'webp', 'gif', 'ico', 'json'], true);
+}
+
+function inspectDeployStatus(): array {
+    $paths  = resolveDeployPaths();
+    $srcDir = $paths['src'];
+    $dstDir = $paths['dst'];
+
+    if (!is_dir($srcDir) || !is_file($srcDir . '/index.php')) {
+        return [
+            'available'   => false,
+            'in_github'   => $paths['is_running_in_github'],
+            'src'         => $srcDir,
+            'dst'         => $dstDir,
+            'git'         => null,
+            'pending'     => [],
+            'obsolete'    => [],
+            'total_files' => 0,
+        ];
+    }
+
+    $candidates = [];
+    foreach (@scandir($srcDir) ?: [] as $f) {
+        if (!is_file($srcDir . '/' . $f) || !isDeployableRepoFile($f)) continue;
+        // No pisar caché viva de reseñas en producción si ya existe
+        if ($f === 'cache_google_reviews.json' && is_file($dstDir . '/' . $f)) continue;
+        $candidates[] = $f;
+    }
+
+    if (is_dir($srcDir . '/carta')) {
+        foreach (@scandir($srcDir . '/carta') ?: [] as $cf) {
+            if (!is_file($srcDir . '/carta/' . $cf) || !isDeployableRepoFile($cf)) continue;
+            $candidates[] = 'carta/' . $cf;
+        }
+    }
+    sort($candidates);
+
+    $pending = [];
+    foreach ($candidates as $rel) {
+        $sFile = $srcDir . '/' . $rel;
+        $dFile = $dstDir . '/' . $rel;
+        if (!is_file($dFile)) {
+            $pending[] = ['file' => $rel, 'status' => 'nuevo'];
+        } elseif (@sha1_file($sFile) !== @sha1_file($dFile)) {
+            $pending[] = ['file' => $rel, 'status' => 'modificado'];
+        }
+    }
+
+    // Detectar archivos obsoletos / inseguros en producción (sin tocar Uploads ni carpetas ajenas)
+    $obsolete = [];
+    foreach (@scandir($dstDir) ?: [] as $df) {
+        if (!is_file($dstDir . '/' . $df)) continue;
+        if (in_array($df, ['carta.php', 'info.php', 'genhash.php', 'error_log.txt'], true)
+            || preg_match('/^(diag.*|.*\-old)\.(php|css|html)$/i', $df)
+            || preg_match('/\.(zip|tar\.gz|BKP)$/i', $df)
+        ) {
+            $obsolete[] = $df;
+        }
+    }
+    if (is_dir($dstDir . '/carta')) {
+        foreach (@scandir($dstDir . '/carta') ?: [] as $cdf) {
+            if (!is_file($dstDir . '/carta/' . $cdf)) continue;
+            if (in_array($cdf, ['index_old.php', 'test.php'], true)
+                || preg_match('/^(diag.*|.*\-old)\.(php|css|html)$/i', $cdf)
+                || preg_match('/\.zip$/i', $cdf)
+            ) {
+                $obsolete[] = 'carta/' . $cdf;
+            }
+        }
+    }
+    sort($obsolete);
+
+    return [
+        'available'   => true,
+        'in_github'   => $paths['is_running_in_github'],
+        'src'         => $srcDir,
+        'dst'         => $dstDir,
+        'git'         => getGitRepoMeta($srcDir),
+        'candidates'  => $candidates,
+        'pending'     => $pending,
+        'obsolete'    => $obsolete,
+        'total_files' => count($candidates),
+    ];
+}
+
+function executeDeployFromGithub(bool $cleanObsolete, bool $forceAll = false): array {
+    $plan = inspectDeployStatus();
+    if (!$plan['available']) {
+        throw new Exception("No se encontró el directorio del repositorio en {$plan['src']}. Verificá que el clon de Ferozo esté en /public_html/github.");
+    }
+
+    $srcDir = $plan['src'];
+    $dstDir = $plan['dst'];
+
+    if (!is_dir($dstDir) || !is_writable($dstDir)) {
+        throw new Exception("El directorio de destino ({$dstDir}) no tiene permisos de escritura.");
+    }
+    if (!is_dir($dstDir . '/carta') && !@mkdir($dstDir . '/carta', 0755, true)) {
+        throw new Exception("No se pudo crear la carpeta {$dstDir}/carta.");
+    }
+
+    $filesToCopy = $forceAll
+        ? $plan['candidates']
+        : array_column($plan['pending'], 'file');
+
+    $copied  = 0;
+    $deleted = 0;
+
+    foreach ($filesToCopy as $rel) {
+        $sFile   = $srcDir . '/' . $rel;
+        $dFile   = $dstDir . '/' . $rel;
+        $tmpFile = $dFile . '.tmp_deploy';
+
+        if (!@copy($sFile, $tmpFile)) {
+            throw new Exception("Error al copiar archivo temporal para {$rel}.");
+        }
+        if (!@rename($tmpFile, $dFile)) {
+            if (!@copy($sFile, $dFile)) {
+                @unlink($tmpFile);
+                throw new Exception("No se pudo reemplazar {$rel} en producción.");
+            }
+            @unlink($tmpFile);
+        }
+        @chmod($dFile, 0644);
+        if (function_exists('opcache_invalidate')) {
+            @opcache_invalidate($dFile, true);
+        }
+        $copied++;
+    }
+
+    if ($cleanObsolete && !empty($plan['obsolete'])) {
+        foreach ($plan['obsolete'] as $obsRel) {
+            // Doble control: jamás borrar fuera de raíz o carta/
+            if (strpos($obsRel, '..') !== false) continue;
+            $obsPath = $dstDir . '/' . $obsRel;
+            if (is_file($obsPath) && @unlink($obsPath)) {
+                $deleted++;
+            }
+        }
+    }
+
+    return ['copied' => $copied, 'deleted' => $deleted];
+}
 
 // ── Horarios de Atención (unificados en una sola fila aunque crucen medianoche) ──
 function normTime(?string $t): string {
@@ -667,6 +882,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $up->execute(['meta_pixel_id', $pixelId, $pixelId]);
             $up->execute(['ga4_id',        $ga4Id,   $ga4Id]);
             $success[] = "Configuración de Meta Pixel y Google Analytics actualizada.";
+
+        } elseif ($action === 'update_store_settings') {
+            $rawShip = str_replace(',', '.', trim((string)($_POST['store_shipping_cost'] ?? '0')));
+            if ($rawShip === '') $rawShip = '0';
+            if (!is_numeric($rawShip) || (float)$rawShip < 0) {
+                throw new Exception("El costo de envío debe ser 0 o un monto positivo.");
+            }
+            $shipClean = (string)round((float)$rawShip, 2);
+            $up = $pdo->prepare("
+                INSERT INTO site_settings (setting_key, setting_value) VALUES ('store_shipping_cost', ?)
+                ON DUPLICATE KEY UPDATE setting_value = ?
+            ");
+            $up->execute([$shipClean, $shipClean]);
+            $success[] = "Configuración de envío de Tienda actualizada.";
+
+        } elseif ($action === 'deploy_from_github') {
+            $cleanObs = !empty($_POST['clean_obsolete']);
+            $forceAll = !empty($_POST['force_all']);
+            $res = executeDeployFromGithub($cleanObs, $forceAll);
+            $msgParts = ["¡Publicación completada! {$res['copied']} archivo(s) sincronizados desde /github hacia public_html y /carta"];
+            if ($res['deleted'] > 0) {
+                $msgParts[] = "{$res['deleted']} archivo(s) obsoleto(s) eliminado(s)";
+            }
+            $success[] = implode(' · ', $msgParts) . ". Tus fotos (/Uploads), config.php y demás subcarpetas no fueron tocadas.";
         }
     } catch (Exception $e) {
         $errors[] = $e->getMessage();
@@ -729,11 +968,33 @@ $business_hours = $pdo->query("
     ORDER BY FIELD(day_of_week, 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'), start_time
 ")->fetchAll(PDO::FETCH_ASSOC);
 
-$transfer_alias  = getSetting($pdo, 'transfer_alias',  'RRBBPIZZA');
-$transfer_holder = getSetting($pdo, 'transfer_holder', 'Ezequiel Urquidi');
-$gtm_id          = getSetting($pdo, 'gtm_id',          'GTM-5JWLLKC7');
-$meta_pixel_id   = getSetting($pdo, 'meta_pixel_id',   '313442609878673');
-$ga4_id          = getSetting($pdo, 'ga4_id',          '');
+$transfer_alias      = getSetting($pdo, 'transfer_alias',      'RRBBPIZZA');
+$transfer_holder     = getSetting($pdo, 'transfer_holder',     'Ezequiel Urquidi');
+$gtm_id              = getSetting($pdo, 'gtm_id',              'GTM-5JWLLKC7');
+$meta_pixel_id       = getSetting($pdo, 'meta_pixel_id',       '313442609878673');
+$ga4_id              = getSetting($pdo, 'ga4_id',              '');
+$store_shipping_cost = getSetting($pdo, 'store_shipping_cost', '0');
+
+$deploy_status = inspectDeployStatus();
+
+$mp_token_raw = trim((string)(
+    $config['mercadopago']['access_token']
+    ?? $config['mp_access_token']
+    ?? getenv('MP_ACCESS_TOKEN')
+    ?: ''
+));
+$mp_token_configured = ($mp_token_raw !== '');
+$mp_token_preview    = $mp_token_configured ? (substr($mp_token_raw, 0, 12) . '••••••••') : '';
+
+$store_orders = [];
+try {
+    $chkSo = $pdo->query("SHOW TABLES LIKE 'store_orders'")->fetchColumn();
+    if ($chkSo) {
+        $store_orders = $pdo->query("SELECT * FROM store_orders ORDER BY created_at DESC LIMIT 30")->fetchAll(PDO::FETCH_ASSOC);
+    }
+} catch (Throwable $e) {
+    $store_orders = [];
+}
 
 $days_of_week = [
     'Lunes'     => 'L',
@@ -994,6 +1255,37 @@ $days_of_week = [
         }
         .btn-add-schedule:hover { background: var(--azul-elec) !important; color: #fff !important; border-style: solid !important; }
 
+        .deploy-box {
+            margin-bottom: 22px; padding: 18px 20px; border-radius: var(--radius);
+            border: 2.5px solid var(--azul-elec); background: #eef6ff;
+            box-shadow: 4px 4px 0 var(--azul-elec);
+        }
+        .deploy-box.has-changes { background: #fff8eb; border-color: #d97706; box-shadow: 4px 4px 0 #b45309; }
+        .deploy-box h3 { font-family: var(--font-display); font-size: 1.45rem; color: var(--marron); margin-bottom: 6px; letter-spacing: .03em; }
+        .deploy-meta { font-size: 0.85rem; color: #475569; margin-bottom: 10px; line-height: 1.45; }
+        .deploy-pill-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 12px; }
+        .deploy-pill {
+            font-size: 0.78rem; font-weight: 700; padding: 3px 9px; border-radius: 99px;
+            background: #fff; border: 1px solid #cbd5e1; color: #1e293b; font-family: monospace;
+        }
+        .deploy-pill.nuevo { background: #dcfce7; border-color: #86efac; color: #166534; }
+        .deploy-pill.obs { background: #fee2e2; border-color: #fca5a5; color: #991b1b; }
+        .btn-deploy-now {
+            background: #16a34a !important; color: #fff !important; border: 2px solid #15803d !important;
+            box-shadow: 3px 3px 0 #166534 !important; padding: 11px 22px !important;
+            font-size: 1rem !important; font-weight: 700 !important; border-radius: 8px !important; cursor: pointer;
+        }
+        .btn-deploy-now:hover { background: #15803d !important; transform: translate(-1px,-1px); }
+
+        .status-badge {
+            display: inline-block; padding: 3px 10px; border-radius: 99px;
+            font-size: 0.76rem; font-weight: 700; text-transform: uppercase;
+        }
+        .status-badge.approved { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
+        .status-badge.pending  { background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; }
+        .status-badge.demo     { background: #e0e7ff; color: #3730a3; border: 1px solid #a5b4fc; }
+        .status-badge.rejected { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
+
         @media (max-width: 768px) {
             .section { padding: 90px 12px 24px; }
             .editor-container { padding: 18px 14px; }
@@ -1022,6 +1314,74 @@ $days_of_week = [
             <?php foreach ($success as $msg): ?>
                 <p class="success"><?php echo htmlspecialchars($msg, ENT_QUOTES, 'UTF-8'); ?></p>
             <?php endforeach; ?>
+
+            <!-- 0. Publicación 1-Click desde /github hacia Producción (Sin FTP) -->
+            <?php if ($deploy_status['available']):
+                $pendingCount = count($deploy_status['pending']);
+                $obsCount     = count($deploy_status['obsolete']);
+                $hasWork      = ($pendingCount > 0 || $obsCount > 0);
+            ?>
+            <div class="deploy-box <?php echo $hasWork ? 'has-changes' : ''; ?>">
+                <h3>🚀 Publicar desde GitHub a Producción (Sin FTP)</h3>
+                <div class="deploy-meta">
+                    <?php if ($deploy_status['in_github']): ?>
+                        <strong>Estás en el editor de pruebas (<code>/github/editor.php</code>).</strong> Al publicar por primera vez, ya vas a poder hacer los próximos despliegues directamente desde <code>arrabbiata.com.ar/editor.php</code>.<br>
+                    <?php endif; ?>
+                    Origen: <code><?php echo htmlspecialchars($deploy_status['src'], ENT_QUOTES, 'UTF-8'); ?></code> &rarr;
+                    Destino: <code><?php echo htmlspecialchars($deploy_status['dst'], ENT_QUOTES, 'UTF-8'); ?></code>
+                    <?php if (!empty($deploy_status['git']['hash'])): ?>
+                        <br>Última versión en <code>/github</code>: <strong><code><?php echo htmlspecialchars($deploy_status['git']['hash'], ENT_QUOTES, 'UTF-8'); ?></code></strong>
+                        <?php if (!empty($deploy_status['git']['date'])): ?>(<?php echo htmlspecialchars($deploy_status['git']['date'], ENT_QUOTES, 'UTF-8'); ?>)<?php endif; ?>
+                        <?php if (!empty($deploy_status['git']['msg'])): ?> — <em><?php echo htmlspecialchars($deploy_status['git']['msg'], ENT_QUOTES, 'UTF-8'); ?></em><?php endif; ?>
+                    <?php endif; ?>
+                </div>
+
+                <?php if ($pendingCount > 0): ?>
+                    <p style="font-size:0.9rem;font-weight:700;color:#92400e;">
+                        Hay <?php echo $pendingCount; ?> archivo(s) con cambios listos para pasar a producción:
+                    </p>
+                    <div class="deploy-pill-list">
+                        <?php foreach ($deploy_status['pending'] as $pf): ?>
+                            <span class="deploy-pill <?php echo htmlspecialchars($pf['status'], ENT_QUOTES, 'UTF-8'); ?>">
+                                <?php echo ($pf['status'] === 'nuevo' ? '+ ' : '↻ ') . htmlspecialchars($pf['file'], ENT_QUOTES, 'UTF-8'); ?>
+                            </span>
+                        <?php endforeach; ?>
+                    </div>
+                <?php else: ?>
+                    <p style="font-size:0.92rem;font-weight:700;color:#166534;margin-bottom:8px;">
+                        ✓ Producción (<code>public_html</code> y <code>/carta</code>) está 100% al día con <code>/github</code> (<?php echo (int)$deploy_status['total_files']; ?> archivos verificados).
+                    </p>
+                <?php endif; ?>
+
+                <?php if ($obsCount > 0): ?>
+                    <p style="font-size:0.86rem;font-weight:700;color:#991b1b;margin-top:6px;">
+                        Archivos viejos / inseguros detectados en producción:
+                    </p>
+                    <div class="deploy-pill-list">
+                        <?php foreach ($deploy_status['obsolete'] as $of): ?>
+                            <span class="deploy-pill obs">🗑 <?php echo htmlspecialchars($of, ENT_QUOTES, 'UTF-8'); ?></span>
+                        <?php endforeach; ?>
+                    </div>
+                <?php endif; ?>
+
+                <form method="POST" onsubmit="return confirm('¿Publicar ahora los archivos desde /github hacia public_html y /carta? (Tus fotos en /Uploads, config.php y otras carpetas no se tocan)');" style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin-top:8px;">
+                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>">
+                    <input type="hidden" name="action" value="deploy_from_github">
+                    <?php if ($pendingCount === 0 && $obsCount === 0): ?>
+                        <input type="hidden" name="force_all" value="1">
+                    <?php endif; ?>
+                    <?php if ($obsCount > 0): ?>
+                        <label style="display:inline-flex;align-items:center;gap:6px;font-size:0.86rem;font-weight:600;color:#991b1b;cursor:pointer;margin:0;">
+                            <input type="checkbox" name="clean_obsolete" value="1" checked style="width:auto;margin:0;">
+                            Eliminar también los <?php echo $obsCount; ?> archivo(s) viejos/inseguros listados arriba
+                        </label>
+                    <?php endif; ?>
+                    <button type="submit" class="btn-deploy-now">
+                        <?php echo ($pendingCount > 0 || $obsCount > 0) ? '🚀 Publicar cambios a Producción ahora' : '🔄 Re-sincronizar todos los archivos'; ?>
+                    </button>
+                </form>
+            </div>
+            <?php endif; ?>
 
             <!-- 1. Horarios de Atención (un solo paso con cruce de medianoche) -->
             <details>
@@ -1137,6 +1497,99 @@ $days_of_week = [
                         <div style="margin-top:8px;"><button type="submit">Guardar Trackers</button></div>
                     </form>
                 </div>
+            </details>
+
+            <!-- 3B. Tienda Online (Mercado Pago, Envío y Pedidos) -->
+            <details>
+                <summary>Tienda Online y Cobros (Mercado Pago)</summary>
+                <div class="editor-form">
+                    <h3>Estado de la Pasarela de Pagos</h3>
+                    <?php if ($mp_token_configured): ?>
+                        <p style="background:#dcfce7;border:1.5px solid #86efac;color:#166534;padding:10px 14px;border-radius:8px;font-weight:700;">
+                            🟢 Cobro Real Activo — Access Token detectado en <code>config.php</code> (<code><?php echo htmlspecialchars($mp_token_preview, ENT_QUOTES, 'UTF-8'); ?></code>).
+                        </p>
+                    <?php else: ?>
+                        <div style="background:#fef3c7;border:1.5px solid #fcd34d;color:#92400e;padding:12px 14px;border-radius:8px;font-size:0.9rem;line-height:1.5;">
+                            <strong>🟡 Modo Demo (Sin cobro real todavía):</strong> Falta agregar tu <strong>Access Token de Producción</strong> de Mercado Pago dentro de <code>/home/c2652217/config.php</code> (fuera de GitHub por seguridad):<br>
+                            <code style="display:inline-block;margin-top:6px;background:#fff;padding:4px 8px;border-radius:4px;color:#1e293b;">'mp_access_token' =&gt; 'APP_USR-tu-access-token-de-produccion',</code>
+                        </div>
+                    <?php endif; ?>
+
+                    <h3 style="margin-top:14px;">Costo de Envío en Tienda</h3>
+                    <p class="note">
+                        Si ponés <strong>0</strong>, cuando el comprador elija <em>Envío a domicilio</em> verá un aviso indicando que el envío se coordina por WhatsApp. Si ponés un monto mayor a 0 (ej. <code>4500</code>), se suma automáticamente al carrito y al cobro de Mercado Pago.
+                    </p>
+                    <form method="POST">
+                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>">
+                        <input type="hidden" name="action" value="update_store_settings">
+                        <label>Costo fijo de envío a domicilio (ARS):</label>
+                        <input type="number" step="0.01" min="0" name="store_shipping_cost" value="<?php echo htmlspecialchars($store_shipping_cost, ENT_QUOTES, 'UTF-8'); ?>" placeholder="0" required>
+                        <div style="margin-top:8px;"><button type="submit">Guardar envío de Tienda</button></div>
+                    </form>
+
+                    <p class="note" style="margin-top:12px;">
+                        <strong>¿Cómo mostrar productos en la Tienda?</strong> Creá una categoría cuyo nombre contenga la palabra <strong>Tienda</strong> (por ejemplo <em>Tienda</em> o <em>Tienda Merch</em>) y cargale tus productos (podés usar Variantes para talles S/M/L/XL). La sección aparecerá sola en el Home y en <a href="tienda.php" target="_blank" style="color:var(--azul-elec);text-decoration:underline;">tienda.php</a>.
+                    </p>
+                </div>
+
+                <?php if (!empty($store_orders)): ?>
+                <div class="hours-table-container">
+                    <h3>Últimas Compras en Tienda</h3>
+                    <table class="hours-table">
+                        <thead>
+                            <tr>
+                                <th>Fecha / Ref</th>
+                                <th>Cliente</th>
+                                <th>Entrega</th>
+                                <th>Detalle</th>
+                                <th>Total / Estado</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($store_orders as $so):
+                                $soItems = json_decode((string)$so['items_json'], true) ?: [];
+                                $stClass = in_array($so['status'], ['approved', 'pending', 'demo'], true) ? $so['status'] : 'rejected';
+                                $stLabels = ['approved' => 'Pagado', 'pending' => 'Pendiente', 'demo' => 'Demo', 'rejected' => 'Rechazado', 'cancelled' => 'Cancelado'];
+                                $stLabel = $stLabels[$so['status']] ?? $so['status'];
+                                $waDigits = preg_replace('/\D+/', '', (string)$so['customer_phone']);
+                            ?>
+                            <tr>
+                                <td>
+                                    <strong><?php echo htmlspecialchars((string)$so['reference'], ENT_QUOTES, 'UTF-8'); ?></strong><br>
+                                    <span style="font-size:11px;color:#666;"><?php echo htmlspecialchars((string)$so['created_at'], ENT_QUOTES, 'UTF-8'); ?></span>
+                                </td>
+                                <td>
+                                    <strong><?php echo htmlspecialchars((string)$so['customer_name'], ENT_QUOTES, 'UTF-8'); ?></strong><br>
+                                    <span style="font-size:12px;"><?php echo htmlspecialchars((string)$so['customer_email'], ENT_QUOTES, 'UTF-8'); ?></span><br>
+                                    <?php if ($waDigits !== ''): ?>
+                                        <a href="https://wa.me/<?php echo htmlspecialchars($waDigits, ENT_QUOTES, 'UTF-8'); ?>" target="_blank" rel="noopener" style="color:#15803d;font-weight:700;font-size:12px;">📱 <?php echo htmlspecialchars((string)$so['customer_phone'], ENT_QUOTES, 'UTF-8'); ?></a>
+                                    <?php else: ?>
+                                        <?php echo htmlspecialchars((string)$so['customer_phone'], ENT_QUOTES, 'UTF-8'); ?>
+                                    <?php endif; ?>
+                                </td>
+                                <td>
+                                    <?php if ($so['delivery_type'] === 'envio'): ?>
+                                        <strong>🛵 Envío</strong><br>
+                                        <span style="font-size:12px;"><?php echo htmlspecialchars((string)$so['address'], ENT_QUOTES, 'UTF-8'); ?></span>
+                                    <?php else: ?>
+                                        <strong>🏪 Retiro en local</strong>
+                                    <?php endif; ?>
+                                </td>
+                                <td style="font-size:12px;">
+                                    <?php foreach ($soItems as $sit): ?>
+                                        <div>• <?php echo htmlspecialchars((string)($sit['name'] ?? ''), ENT_QUOTES, 'UTF-8'); ?> x<?php echo (int)($sit['qty'] ?? 1); ?></div>
+                                    <?php endforeach; ?>
+                                </td>
+                                <td>
+                                    <strong>$<?php echo number_format((float)$so['total'], 0, ',', '.'); ?></strong><br>
+                                    <span class="status-badge <?php echo htmlspecialchars($stClass, ENT_QUOTES, 'UTF-8'); ?>"><?php echo htmlspecialchars($stLabel, ENT_QUOTES, 'UTF-8'); ?></span>
+                                </td>
+                            </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+                <?php endif; ?>
             </details>
 
             <!-- 4. Administrar Categorías -->

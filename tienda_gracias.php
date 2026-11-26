@@ -2,27 +2,34 @@
 session_start();
 require_once __DIR__ . '/db_connect.php';
 
+$isDemo = !empty($_GET['demo']);
 $status = $_GET['status'] ?? (!empty($_GET['ref']) ? 'success' : '');
 $ref    = $_GET['ref'] ?? ($_GET['external_reference'] ?? '');
 $total  = $_GET['total'] ?? '';
 
-$titles = [
-    'success'  => '¡Gracias por tu compra!',
-    'approved' => '¡Gracias por tu compra!',
-    'pending'  => 'Tu pago está pendiente',
-    'failure'  => 'El pago no se completó',
-    ''         => '¡Gracias por tu compra!',
-];
-$messages = [
-    'success'  => 'Recibimos tu pedido y lo estamos preparando. Te contactaremos por los datos que dejaste.',
-    'approved' => 'Recibimos tu pedido y lo estamos preparando. Te contactaremos por los datos que dejaste.',
-    'pending'  => 'Cuando se acredite el pago, vamos a preparar tu pedido. Si tenés dudas, escribinos por WhatsApp.',
-    'failure'  => 'No pudimos procesar el pago. Podés intentarlo de nuevo desde la tienda.',
-    ''         => 'Recibimos tu pedido. Te contactaremos por los datos que dejaste.',
-];
-$title = $titles[$status] ?? $titles[''];
-$msg   = $messages[$status] ?? $messages[''];
-$isSuccess = in_array($status, ['success', 'approved'], true);
+if ($isDemo) {
+    $title = 'Pedido de prueba registrado (Modo Demo)';
+    $msg   = 'Todavía no hay un Access Token de Mercado Pago configurado en el servidor, por lo que no se realizó ningún cobro real.';
+    $isSuccess = false;
+} else {
+    $titles = [
+        'success'  => '¡Gracias por tu compra!',
+        'approved' => '¡Gracias por tu compra!',
+        'pending'  => 'Tu pago está pendiente',
+        'failure'  => 'El pago no se completó',
+        ''         => '¡Gracias por tu compra!',
+    ];
+    $messages = [
+        'success'  => 'Recibimos tu pago y ya estamos preparando tu pedido. Nos comunicaremos con vos a los datos que dejaste.',
+        'approved' => 'Recibimos tu pago y ya estamos preparando tu pedido. Nos comunicaremos con vos a los datos que dejaste.',
+        'pending'  => 'Cuando se acredite el pago, vamos a preparar tu pedido. Si tenés dudas, escribinos por WhatsApp.',
+        'failure'  => 'No pudimos procesar el pago. Podés intentarlo de nuevo desde la tienda.',
+        ''         => 'Recibimos tu pedido. Te contactaremos por los datos que dejaste.',
+    ];
+    $title = $titles[$status] ?? $titles[''];
+    $msg   = $messages[$status] ?? $messages[''];
+    $isSuccess = in_array($status, ['success', 'approved'], true);
+}
 
 $analytics_source = 'tienda';
 $track_endpoint   = 'carta/track.php';
