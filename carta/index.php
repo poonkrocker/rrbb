@@ -40,7 +40,7 @@ $track_endpoint   = 'track.php';
     <title>Nuestra Carta - Pizzería Arrabbiata</title>
     <link rel="icon" type="image/png" href="favicon.png"/>
 <?php require dirname(__DIR__) . '/_analytics.php'; ?>
-    <link rel="stylesheet" href="https://arrabbiata.com.ar/arrabbiata.css">
+    <link rel="stylesheet" href="arrabbiata.css">
     <script type="application/ld+json">
 <?php echo json_encode($local_schema, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT); ?>
     </script>

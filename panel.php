@@ -783,6 +783,10 @@ $extrasAttachPct = $kpi['pedidos'] > 0 ? ($ordersWithExtras / $kpi['pedidos']) *
     .funnel-bar-fill{height:100%;background:linear-gradient(90deg,var(--rojo),#e84a3a);border-radius:6px;transition:width .3s}
     .funnel-pct{text-align:right;font-weight:700;font-variant-numeric:tabular-nums;color:var(--marron)}
 
+    .doughnut-split{display:grid;grid-template-columns:140px minmax(0,1fr);gap:16px;align-items:center}
+    .doughnut-box{position:relative;width:140px;height:140px;flex-shrink:0;margin:0 auto}
+    @media(max-width:560px){.doughnut-split{grid-template-columns:1fr}.doughnut-box{width:150px;height:150px}}
+
     .data-table{width:100%;border-collapse:collapse;font-size:.85rem}
     .data-table th,.data-table td{padding:8px 10px;text-align:left;border-bottom:1px solid #eee0c8;vertical-align:middle}
     .data-table th{color:var(--rojo);text-transform:uppercase;font-size:.72rem;letter-spacing:.04em;background:#fcf9f2;font-weight:700}
@@ -1262,8 +1266,9 @@ $extrasAttachPct = $kpi['pedidos'] > 0 ? ($ordersWithExtras / $kpi['pedidos']) *
                     <span class="hint">Desglose financiero</span>
                 </div>
                 <?php if ($pagoCount): ?>
-                    <div style="display:grid;grid-template-columns:140px 1fr;gap:12px;align-items:center">
-                        <canvas id="chartPago" style="max-height:140px"></canvas>
+                    <div class="doughnut-split">
+                        <div class="doughnut-box"><canvas id="chartPago"></canvas></div>
+                        <div style="overflow-x:auto">
                         <table class="data-table">
                             <thead>
                                 <tr><th>Medio</th><th class="num">Ped.</th><th class="num">Total ($)</th><th class="num">% $</th></tr>
@@ -1282,6 +1287,7 @@ $extrasAttachPct = $kpi['pedidos'] > 0 ? ($ordersWithExtras / $kpi['pedidos']) *
                                 <?php endforeach; ?>
                             </tbody>
                         </table>
+                        </div>
                     </div>
                 <?php else: ?>
                     <div class="empty">Sin datos todavía</div>
@@ -1294,8 +1300,9 @@ $extrasAttachPct = $kpi['pedidos'] > 0 ? ($ordersWithExtras / $kpi['pedidos']) *
                     <span class="hint">Cantidad y ticket promedio por modalidad</span>
                 </div>
                 <?php if ($entregaCount): ?>
-                    <div style="display:grid;grid-template-columns:140px 1fr;gap:12px;align-items:center">
-                        <canvas id="chartEntrega" style="max-height:140px"></canvas>
+                    <div class="doughnut-split">
+                        <div class="doughnut-box"><canvas id="chartEntrega"></canvas></div>
+                        <div style="overflow-x:auto">
                         <table class="data-table">
                             <thead>
                                 <tr><th>Modalidad</th><th class="num">Ped.</th><th class="num">Total ($)</th><th class="num">Ticket Prom.</th></tr>
@@ -1314,6 +1321,7 @@ $extrasAttachPct = $kpi['pedidos'] > 0 ? ($ordersWithExtras / $kpi['pedidos']) *
                                 <?php endforeach; ?>
                             </tbody>
                         </table>
+                        </div>
                     </div>
                 <?php else: ?>
                     <div class="empty">Sin datos todavía</div>
@@ -1528,7 +1536,7 @@ $extrasAttachPct = $kpi['pedidos'] > 0 ? ($ordersWithExtras / $kpi['pedidos']) *
         new Chart(el, {
             type: 'doughnut',
             data: { labels: Object.keys(obj), datasets: [{ data: Object.values(obj), backgroundColor: PALETTE }] },
-            options: { responsive: true, plugins: { legend: { display: false } } }
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
         });
     }
     doughnut('chartPago', pago);
