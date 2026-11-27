@@ -1278,6 +1278,53 @@ $days_of_week = [
             transition: transform 0.15s ease, box-shadow 0.15s ease;
             cursor: pointer; position: relative; display: flex; flex-direction: column;
         }
+        .item-card:focus-visible {
+            outline: 3px solid var(--rojo); outline-offset: 3px;
+        }
+        .item-card .item-card-edit-hint {
+            display: block; margin: auto 8px 9px; padding: 6px 8px;
+            border-radius: 5px; background: #eef4ff; color: var(--azul-elec);
+            font-size: .76rem; font-weight: 700; text-align: center;
+        }
+        .modal { padding: max(10px, env(safe-area-inset-top)) 10px max(10px, env(safe-area-inset-bottom)); }
+        .modal-content {
+            width: min(100%, 640px); max-height: calc(100dvh - 20px);
+            max-height: calc(100vh - 20px); overflow-y: auto;
+            -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+        }
+        .modal-close {
+            position: sticky; top: 0; z-index: 5; float: right;
+            display: flex; align-items: center; justify-content: center;
+            width: 40px; height: 40px; margin: -12px -12px 4px 8px;
+            background: var(--blanco); border-radius: 50%; box-shadow: 0 1px 5px rgba(0,0,0,.18);
+        }
+        .modal-form { clear: both; }
+        .modal-form input, .modal-form select, .modal-form textarea,
+        .modal-form button { touch-action: manipulation; }
+        @media (max-width: 640px) {
+            .item-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 12px; }
+            .item-card img { height: 112px; }
+            .item-card h3 { font-size: .96rem; line-height: 1.2; overflow-wrap: anywhere; }
+            .modal { align-items: flex-start; }
+            .modal-content {
+                width: 100%; max-width: none; max-height: calc(100dvh - 20px);
+                padding: 16px; margin: auto 0;
+            }
+            .modal-form input:not([type="url"]):not([type="file"]):not([type="checkbox"]),
+            .modal-form select, .modal-form textarea, .modal-form input[type="url"] {
+                max-width: none; font-size: 16px; min-height: 44px;
+            }
+            .modal-form textarea { min-height: 88px; }
+            .modal-form button { min-height: 44px; }
+            .modal-form .toggle-group { gap: 12px; }
+            .modal-form .toggle-inputs { min-width: calc(50% - 8px); }
+            .modal-form .schedule-row { padding: 10px !important; }
+            .modal-form .schedule-row input[type="time"] { max-width: none !important; flex: 1 1 110px; min-height: 44px; }
+            .modal-form .variants-inputs { overflow: hidden; }
+            .modal-form .variant-row input { flex: 1 1 100% !important; width: 100% !important; max-width: none !important; }
+            .modal-form > form > div[style*="display:flex"] { flex-wrap: wrap; }
+            .modal-form > form > div[style*="display:flex"] button { flex: 1 1 100%; }
+        }
         .item-card.is-hidden-item { opacity: 0.55; }
         .item-card:hover { transform: translate(-2px, -2px); box-shadow: 5px 5px 0 var(--azul-barra); }
         .item-card img { width: 100%; height: 105px; object-fit: cover; }
@@ -1739,16 +1786,18 @@ $days_of_week = [
                 </div>
             </details>
 
-            <!-- 4. Productos Existentes (Clic para editar / Arrastrar para ordenar) -->
+            <!-- 4. Productos Existentes (acceso directo a edición individual; el orden se gestiona por categoría arriba) -->
             <details>
-                <summary>Productos Existentes</summary>
-                <p class="note" style="padding:14px 20px 0;">Tocá cualquier tarjeta para editar el producto o arrastrala para cambiar su orden.</p>
+                <summary>Editar productos existentes</summary>
+                <p class="note" style="padding:14px 20px 0;">Seleccioná un producto para abrir su ficha. El orden se administra exclusivamente en «Categorías y Actualización Masiva».</p>
                 <div class="item-grid" id="item-grid">
                     <?php foreach ($menu_items_by_category as $category_id => $items): ?>
                         <?php foreach ($items as $item): ?>
                             <div class="item-card <?php echo !$item['is_visible'] ? 'is-hidden-item' : ''; ?>"
                                  data-id="<?php echo (int)$item['id']; ?>"
-                                 data-cat-id="<?php echo (int)$item['category_id']; ?>">
+                                 data-cat-id="<?php echo (int)$item['category_id']; ?>"
+                                 role="button" tabindex="0"
+                                 aria-label="<?php echo htmlspecialchars('Editar ' . (string)$item['name'], ENT_QUOTES, 'UTF-8'); ?>">
                                 <img src="<?php echo htmlspecialchars($item['image_url'] ?: 'https://via.placeholder.com/150?text=Sin+Imagen', ENT_QUOTES, 'UTF-8'); ?>" alt="<?php echo htmlspecialchars((string)$item['name'], ENT_QUOTES, 'UTF-8'); ?>" loading="lazy">
                                 <h3><?php echo htmlspecialchars((string)$item['name'], ENT_QUOTES, 'UTF-8'); ?></h3>
                                 <div class="item-card-badges">
@@ -1758,6 +1807,7 @@ $days_of_week = [
                                     <?php if (!empty($item['is_secret_menu'])): ?><span class="mini-badge sec">🕵️ Secreta</span><?php endif; ?>
                                     <?php if (!empty($item['has_vegan_option'])): ?><span class="mini-badge veg">🌿 Vegana</span><?php endif; ?>
                                 </div>
+                                <span class="item-card-edit-hint">✎ Tocar para editar</span>
                             </div>
                         <?php endforeach; ?>
                     <?php endforeach; ?>
@@ -2501,27 +2551,8 @@ $days_of_week = [
             });
         })();
 
-        // ── Drag & drop en grilla de Productos Existentes (arreglado: devuelve JSON real) ──
-        const itemGrid = document.getElementById('item-grid');
-        if (itemGrid) {
-            new Sortable(itemGrid, {
-                animation: 150,
-                onEnd: async function() {
-                    const items = Array.from(itemGrid.children).map(item => item.dataset.id);
-                    const fd = new FormData();
-                    fd.append('action',     'update_order');
-                    fd.append('order',      JSON.stringify(items));
-                    fd.append('csrf_token', CSRF_TOKEN);
-                    try {
-                        const res  = await fetch('editor.php', { method: 'POST', body: fd });
-                        const data = await res.json();
-                        if (!data.ok) alert('Error al actualizar el orden: ' + (data.error || ''));
-                    } catch (e) {
-                        console.error('Error al actualizar el orden', e);
-                    }
-                }
-            });
-        }
+        // El orden de productos se administra en «Categorías y Actualización Masiva».
+        // La grilla inferior queda exclusivamente como acceso a las fichas individuales.
 
         // ── Modal de Edición de Producto (100% escapado contra comillas simples y dobles) ──
         function openModal(itemId) {
@@ -2666,7 +2697,17 @@ $days_of_week = [
         }
 
         document.querySelectorAll('.item-card').forEach(card => {
-            card.addEventListener('click', () => openModal(card.dataset.id));
+            card.addEventListener('click', (event) => {
+                // Evita activar la ficha cuando el usuario selecciona/copía texto.
+                if (window.getSelection && String(window.getSelection())) return;
+                openModal(card.dataset.id);
+            });
+            card.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    openModal(card.dataset.id);
+                }
+            });
         });
 
         document.getElementById('edit-item-modal').addEventListener('click', (e) => {
